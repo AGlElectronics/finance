@@ -71,7 +71,7 @@ func Load() (*Config, error) {
 		OIDCAudience:       getEnv("OIDC_AUDIENCE", ""),
 		AccessGroups:       splitCSV(getEnv("FINANCE_ACCESS_GROUPS", "finance-admin")),
 		DenInternalURL:     getEnv("DEN_INTERNAL_URL", ""),
-		CORSAllowedOrigins: splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3004")),
+		CORSAllowedOrigins: splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3006")),
 		ShutdownTimeout:    getEnvDuration("SHUTDOWN_TIMEOUT", 15*time.Second),
 	}
 

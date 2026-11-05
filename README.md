@@ -19,7 +19,7 @@ No bank connection yet; payments are recorded by hand (see
 | Service         | Host port | Container port |
 | --------------- | --------- | -------------- |
 | backend (API)   | **8130**  | 8080           |
-| frontend (SPA)  | **3004**  | 80             |
+| frontend (SPA)  | **3006**  | 80             |
 | postgres        | **5438**  | 5432           |
 | Adminer (local) | 8083      | 8080           |
 
@@ -58,15 +58,15 @@ What happens:
 2. `migrate` (one-shot) applies all pending Goose migrations and exits 0.
 3. `backend` starts on container `:8080`, published on host `:8130`. It
    does **not** auto-migrate.
-4. `frontend` builds the SPA, serves it from nginx on `:3004`, and proxies
+4. `frontend` builds the SPA, serves it from nginx on `:3006`, and proxies
    `/api/...` + `/livez` + `/readyz` to the backend over `backend:8080`.
 
 Health probes:
 
 ```sh
 curl -s http://localhost:8130/livez   # from host → backend direct
-curl -s http://localhost:3004/livez   # from host → frontend → backend
-curl -s http://localhost:3004/api/me  # dev identity echo
+curl -s http://localhost:3006/livez   # from host → frontend → backend
+curl -s http://localhost:3006/api/me  # dev identity echo
 ```
 
 To enable the local-only Adminer (`http://localhost:8083`, server
@@ -125,7 +125,7 @@ DATABASE_URL='postgres://finance:finance@localhost:5438/finance?sslmode=disable'
 # Frontend
 cd finance/frontend
 npm install
-npm run dev                 # serves on :3004, proxies /api to :8130
+npm run dev                 # serves on :3006, proxies /api to :8130
 ```
 
 ## Repository layout

@@ -2,7 +2,7 @@
 #
 # Container ports:
 #   Every module in this ecosystem binds :8080 inside its container.
-#   The HOST port for Finance is 8130 (API) and 3004 (SPA). Mapping lives below.
+#   The HOST port for Finance is 8130 (API) and 3006 (SPA). Mapping lives below.
 #
 # Migrations: the `migrate` service is a ONE-SHOT. The backend depends on
 # it with service_completed_successfully so cmd/server never runs
@@ -15,7 +15,7 @@
 #
 # Reserved HOST ports (Finance module):
 #   backend   : 8130  (container :8080)
-#   frontend  :  3004 (container :80)
+#   frontend  :  3006 (container :80)
 #   postgres  :  5438 (container :5432)
 
 name: finance
@@ -84,7 +84,7 @@ services:
       DEV_DEFAULT_USER: dev-finance-admin
       # Frontend talks to backend via the nginx reverse proxy on the SAME
       # origin, so CORS only matters for `npm run dev` on the host.
-      CORS_ALLOWED_ORIGINS: http://localhost:3004
+      CORS_ALLOWED_ORIGINS: http://localhost:3006
     ports:
       - "8130:8080"
 
@@ -100,7 +100,7 @@ services:
     depends_on:
       - backend
     ports:
-      - "3004:80"
+      - "3006:80"
 
 volumes:
   finance-postgres-data:
