@@ -1,0 +1,23 @@
+# Env
+.env
+.env.*
+!.env.example
+
+# Build output
+backend/bin/
+frontend/dist/
+frontend/node_modules/
+
+# Go
+*.test
+*.out
+coverage.*
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local docker overrides
+docker-compose.override.yml

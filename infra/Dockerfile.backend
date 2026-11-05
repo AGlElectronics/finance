@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1.7
+#
+# Finance API server image. Does NOT run migrations — those live in a separate
+# image (Dockerfile.migrate) that Compose orchestrates as a one-shot.
+# Unlike Stash/HR there is no sqlc step: services use hand-written pgx SQL.
+
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+
+ENV CGO_ENABLED=0 GOFLAGS=-buildvcs=false
+
+COPY backend/go.mod backend/go.sum* ./
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    (test -f go.sum && go mod download) || go mod tidy
+
+COPY backend ./
+
+ARG VERSION=dev
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    go build -trimpath \
+        -ldflags "-s -w -X github.com/AGlElectronics/finance/backend/internal/app.Version=${VERSION}" \
+        -o /out/server ./cmd/server
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/server /server
+# Container listens on :8080 (HTTP_ADDR default). The HOST-side mapping is
+# whatever Compose / K8s wires — host port 8130 is the reserved Finance dev
+# port, but containers all speak :8080 internally so a service mesh /
+# sidecar config stays uniform across modules.
+EXPOSE 8080
+USER nonroot:nonroot
+ENTRYPOINT ["/server"]

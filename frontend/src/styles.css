@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Finance theme tokens (light + .dark). Status colours (success/warning/info) have
+ * soft/foreground pairs so notices stay readable in both modes.
+ */
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 240 6% 13%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 6% 13%;
+    --primary: 243 75% 59%;
+    --primary-hover: 243 65% 52%;
+    --primary-soft: 243 84% 95%;
+    --primary-foreground: 0 0% 100%;
+    --muted: 240 7% 96%;
+    --muted-foreground: 240 5% 41%;
+    --destructive: 0 76% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 152 55% 32%;
+    --success-soft: 149 70% 92%;
+    --success-foreground: 152 70% 18%;
+    --warning: 32 90% 38%;
+    --warning-soft: 48 96% 90%;
+    --warning-foreground: 26 83% 20%;
+    --info: 200 80% 40%;
+    --info-soft: 204 94% 93%;
+    --info-foreground: 201 80% 24%;
+    --border: 240 8% 88%;
+    --input: 240 8% 88%;
+    --ring: 243 75% 59%;
+    --radius: 0.875rem;
+  }
+
+  .dark {
+    --background: 240 6% 10%;
+    --foreground: 240 10% 96%;
+    --card: 240 6% 13%;
+    --card-foreground: 240 10% 96%;
+    --primary: 243 75% 59%;
+    --primary-hover: 243 70% 65%;
+    --primary-soft: 243 35% 21%;
+    --primary-foreground: 0 0% 100%;
+    --muted: 240 7% 18%;
+    --muted-foreground: 240 6% 67%;
+    --destructive: 0 70% 52%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 152 45% 58%;
+    --success-soft: 152 35% 15%;
+    --success-foreground: 150 60% 82%;
+    --warning: 38 90% 60%;
+    --warning-soft: 38 50% 16%;
+    --warning-foreground: 43 96% 82%;
+    --info: 200 80% 65%;
+    --info-soft: 200 40% 17%;
+    --info-foreground: 200 80% 85%;
+    --border: 240 6% 22%;
+    --input: 240 6% 22%;
+    --ring: 243 75% 59%;
+    color-scheme: dark;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family:
+      'Inter Variable',
+      Inter,
+      ui-sans-serif,
+      system-ui,
+      -apple-system,
+      BlinkMacSystemFont,
+      'Segoe UI',
+      sans-serif;
+  }
+}
