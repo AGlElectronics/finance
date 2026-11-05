@@ -1,6 +1,7 @@
 import { Link, Outlet, useRouterState } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import {
+  ArrowDownUp,
   Landmark,
   LayoutDashboard,
   LogOut,
@@ -8,6 +9,7 @@ import {
   Settings,
   ShieldX,
   Users,
+  Wallet,
 } from 'lucide-react';
 
 import { getMe } from '@/api/me';
@@ -22,6 +24,8 @@ type NavItem = { to: string; label: string; icon: React.ComponentType<{ classNam
 const NAV: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/invoices', label: 'Invoices', icon: Receipt },
+  { to: '/expenses', label: 'Expenses', icon: Wallet },
+  { to: '/ledger', label: 'Ledger', icon: ArrowDownUp },
   { to: '/customers', label: 'Customers', icon: Users },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];

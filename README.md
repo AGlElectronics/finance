@@ -1,7 +1,8 @@
 # Finance
 
 Finance module for the Con Services stack — a proof of concept for
-customers, outgoing invoices, payments and a cash-versus-owed dashboard.
+customers, outgoing invoices, payments, expenses, a running ledger and a
+cash-versus-owed dashboard.
 No bank connection yet; payments are recorded by hand (see
 [docs/domain-model.md](docs/domain-model.md)).
 

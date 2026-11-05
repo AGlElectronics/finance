@@ -18,12 +18,27 @@ type Dashboard struct {
 	// Cash received, this calendar month and all time.
 	ReceivedMonthCents int64 `json:"received_month_cents"`
 	ReceivedTotalCents int64 `json:"received_total_cents"`
+	// Cash spent (expenses), this calendar month and all time.
+	SpentMonthCents int64 `json:"spent_month_cents"`
+	SpentTotalCents int64 `json:"spent_total_cents"`
+	// NetTotalCents is the cash position: received minus spent, all time.
+	NetTotalCents int64 `json:"net_total_cents"`
 
 	DraftCount int64 `json:"draft_count"`
 	// OpenCount is issued invoices not yet fully paid.
 	OpenCount int64 `json:"open_count"`
 
+	// Months is money in vs out for the last six calendar months.
+	Months []MonthFlow `json:"months"`
+
 	RecentInvoices []InvoiceSummary `json:"recent_invoices"`
+}
+
+// MonthFlow is one month of cash in and out.
+type MonthFlow struct {
+	Month    string `json:"month"` // YYYY-MM
+	InCents  int64  `json:"in_cents"`
+	OutCents int64  `json:"out_cents"`
 }
 
 // DashboardService aggregates invoices and payments.
@@ -54,13 +69,24 @@ func (s *DashboardService) Get(ctx context.Context) (Dashboard, error) {
 			COALESCE((SELECT sum(amount_cents) FROM payments
 			           WHERE paid_on >= date_trunc('month', current_date)), 0),
 			COALESCE((SELECT sum(amount_cents) FROM payments), 0),
+			COALESCE((SELECT sum(amount_cents) FROM expenses
+			           WHERE occurred_on >= date_trunc('month', current_date)), 0),
+			COALESCE((SELECT sum(amount_cents) FROM expenses), 0),
 			(SELECT count(*) FROM invoices WHERE status = 'draft'),
 			(SELECT count(*) FROM open_invoices)`).Scan(
 		&d.OutstandingCents, &d.OverdueCents, &d.OverdueCount,
-		&d.ReceivedMonthCents, &d.ReceivedTotalCents, &d.DraftCount, &d.OpenCount)
+		&d.ReceivedMonthCents, &d.ReceivedTotalCents,
+		&d.SpentMonthCents, &d.SpentTotalCents, &d.DraftCount, &d.OpenCount)
 	if err != nil {
 		return d, httperror.Internal(err)
 	}
+	d.NetTotalCents = d.ReceivedTotalCents - d.SpentTotalCents
+
+	months, err := s.months(ctx)
+	if err != nil {
+		return d, err
+	}
+	d.Months = months
 
 	recent, err := s.recent(ctx, 8)
 	if err != nil {
@@ -68,6 +94,33 @@ func (s *DashboardService) Get(ctx context.Context) (Dashboard, error) {
 	}
 	d.RecentInvoices = recent
 	return d, nil
+}
+
+// months is cash in vs out for the last six calendar months (oldest first).
+func (s *DashboardService) months(ctx context.Context) ([]MonthFlow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT to_char(m, 'YYYY-MM'),
+		       COALESCE(pin.cents, 0), COALESCE(pout.cents, 0)
+		  FROM generate_series(date_trunc('month', current_date) - interval '5 months',
+		                       date_trunc('month', current_date), '1 month') AS m
+		  LEFT JOIN (SELECT date_trunc('month', paid_on) AS mo, sum(amount_cents) AS cents
+		               FROM payments GROUP BY 1) pin ON pin.mo = m
+		  LEFT JOIN (SELECT date_trunc('month', occurred_on) AS mo, sum(amount_cents) AS cents
+		               FROM expenses GROUP BY 1) pout ON pout.mo = m
+		 ORDER BY m`)
+	if err != nil {
+		return nil, httperror.Internal(err)
+	}
+	defer rows.Close()
+	out := []MonthFlow{}
+	for rows.Next() {
+		var mf MonthFlow
+		if err := rows.Scan(&mf.Month, &mf.InCents, &mf.OutCents); err != nil {
+			return nil, httperror.Internal(err)
+		}
+		out = append(out, mf)
+	}
+	return out, rows.Err()
 }
 
 func (s *DashboardService) recent(ctx context.Context, limit int) ([]InvoiceSummary, error) {

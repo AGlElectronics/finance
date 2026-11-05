@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { Plus } from 'lucide-react';
 
-import { getDashboard } from '@/api/dashboard';
+import { getDashboard, type MonthFlow } from '@/api/dashboard';
 import { InvoiceStatusBadge } from '@/components/InvoiceStatusBadge';
 import { formatCents } from '@/lib/money';
 
@@ -15,6 +15,39 @@ function StatCard({ label, value, tone, hint }: { label: string; value: string; 
       </p>
       {hint && <p className="mt-1 text-xs text-muted-foreground">{hint}</p>}
     </div>
+  );
+}
+
+function monthLabel(month: string): string {
+  return new Date(`${month}-01T00:00:00`).toLocaleDateString(undefined, { month: 'short' });
+}
+
+function CashFlowChart({ months }: { months: MonthFlow[] }) {
+  const max = Math.max(1, ...months.flatMap((m) => [m.in_cents, m.out_cents]));
+  return (
+    <section className="rounded-lg border border-border bg-card">
+      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+        <h2 className="font-semibold">Cash flow, last 6 months</h2>
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-success" /> In</span>
+          <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-destructive" /> Out</span>
+        </div>
+      </div>
+      <div className="flex items-end justify-between gap-2 px-4 pb-3 pt-6">
+        {months.map((m) => (
+          <div key={m.month} className="flex flex-1 flex-col items-center gap-1.5">
+            <div className="flex h-32 w-full max-w-20 items-end justify-center gap-1"
+              title={`In ${formatCents(m.in_cents)} · Out ${formatCents(m.out_cents)}`}>
+              <div className="w-1/2 rounded-t-sm bg-success"
+                style={{ height: `${Math.max(m.in_cents > 0 ? 3 : 1, (m.in_cents / max) * 100)}%` }} />
+              <div className="w-1/2 rounded-t-sm bg-destructive"
+                style={{ height: `${Math.max(m.out_cents > 0 ? 3 : 1, (m.out_cents / max) * 100)}%` }} />
+            </div>
+            <span className="text-xs text-muted-foreground">{monthLabel(m.month)}</span>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -44,13 +77,21 @@ export function DashboardPage() {
         </Link>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <StatCard label="Still owed" value={formatCents(d.outstanding_cents)} hint="Issued invoices minus payments" />
         <StatCard label="Overdue" value={formatCents(d.overdue_cents)} tone={d.overdue_count > 0 ? 'destructive' : undefined}
           hint={`${d.overdue_count} invoice${d.overdue_count === 1 ? '' : 's'} past due`} />
+        <StatCard label="Cash position" value={formatCents(d.net_total_cents)}
+          tone={d.net_total_cents < 0 ? 'destructive' : undefined}
+          hint={`In ${formatCents(d.received_total_cents)} · out ${formatCents(d.spent_total_cents)} all time`} />
         <StatCard label="Received this month" value={formatCents(d.received_month_cents)} tone="success" />
-        <StatCard label="Received all time" value={formatCents(d.received_total_cents)} />
+        <StatCard label="Spent this month" value={formatCents(d.spent_month_cents)}
+          tone={d.spent_month_cents > 0 ? 'destructive' : undefined} />
+        <StatCard label="Net this month" value={formatCents(d.received_month_cents - d.spent_month_cents)}
+          tone={d.received_month_cents - d.spent_month_cents < 0 ? 'destructive' : 'success'} />
       </div>
+
+      <CashFlowChart months={d.months} />
 
       <section className="rounded-lg border border-border bg-card">
         <div className="flex items-center justify-between border-b border-border px-4 py-3">

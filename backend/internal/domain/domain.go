@@ -36,6 +36,20 @@ func ValidPaymentMethod(m string) bool {
 	return false
 }
 
+// ExpenseCategories groups money going out. Mirrors the CHECK constraint on
+// the expenses table.
+var ExpenseCategories = []string{"venue", "equipment", "travel", "supplies", "services", "fees", "other"}
+
+// ValidExpenseCategory reports whether c is a known expense category.
+func ValidExpenseCategory(c string) bool {
+	for _, v := range ExpenseCategories {
+		if v == c {
+			return true
+		}
+	}
+	return false
+}
+
 // DeriveStatus maps the stored status plus payment state to what the UI
 // shows: draft, issued, partial, paid or void.
 func DeriveStatus(stored string, totalCents, paidCents int64) string {

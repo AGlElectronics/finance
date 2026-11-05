@@ -12,6 +12,8 @@ import { Layout } from '@/components/Layout';
 import { getUserManager, isOidcAuthMode } from '@/auth/oidc';
 import { CustomersPage } from '@/pages/CustomersPage';
 import { DashboardPage } from '@/pages/DashboardPage';
+import { ExpensesPage } from '@/pages/ExpensesPage';
+import { LedgerPage } from '@/pages/LedgerPage';
 import { InvoiceDetailPage } from '@/pages/InvoiceDetailPage';
 import { InvoiceEditorPage } from '@/pages/InvoiceEditorPage';
 import { InvoicesPage } from '@/pages/InvoicesPage';
@@ -130,6 +132,18 @@ const invoiceEditRoute = createRoute({
   component: InvoiceEditorPage,
 });
 
+const expensesRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/expenses',
+  component: ExpensesPage,
+});
+
+const ledgerRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/ledger',
+  component: LedgerPage,
+});
+
 const settingsRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: '/settings',
@@ -147,6 +161,8 @@ const routeTree = rootRoute.addChildren([
     invoiceNewRoute,
     invoiceDetailRoute,
     invoiceEditRoute,
+    expensesRoute,
+    ledgerRoute,
     settingsRoute,
   ]),
 ]);

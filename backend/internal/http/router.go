@@ -81,9 +81,12 @@ func NewRouter(deps Deps, version string) http.Handler {
 	customerSvc := service.NewCustomerService(deps.Pool, auditWriter)
 	invoiceSvc := service.NewInvoiceService(deps.Pool, auditWriter)
 	dashSvc := service.NewDashboardService(deps.Pool, invoiceSvc)
+	expenseSvc := service.NewExpenseService(deps.Pool, auditWriter)
+	ledgerSvc := service.NewLedgerService(deps.Pool)
 
 	customers := &customerHandler{svc: customerSvc}
 	invoices := &invoiceHandler{svc: invoiceSvc, dash: dashSvc}
+	expenses := &expenseHandler{svc: expenseSvc, ledger: ledgerSvc}
 
 	r.Route("/api", func(api chi.Router) {
 		api.Use(auth.Middleware(deps.Config, deps.OIDCVerifier))
@@ -122,6 +125,16 @@ func NewRouter(deps Deps, version string) http.Handler {
 				ir.Post("/{id}/void", invoices.void)
 				ir.Post("/{id}/payments", invoices.addPayment)
 			})
+
+			api.Route("/expenses", func(er chi.Router) {
+				er.Get("/", expenses.list)
+				er.Post("/", expenses.create)
+				er.Get("/{id}", expenses.get)
+				er.Patch("/{id}", expenses.update)
+				er.Delete("/{id}", expenses.remove)
+			})
+
+			api.Get("/ledger", expenses.ledgerGet)
 
 			api.Route("/den", func(dr chi.Router) {
 				dr.Get("/", den.StatusHandler)
