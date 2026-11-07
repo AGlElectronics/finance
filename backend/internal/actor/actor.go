@@ -14,7 +14,7 @@ type Actor struct {
 	// Issuer and Subject identify the person at the IdP (Den keys shared
 	// preferences on them). Dev mode uses issuer "dev:" like Den.
 	Issuer, Subject string
-	Groups   []string
+	Groups          []string
 	// HasAccess is true when the caller may use Finance (member of a Finance
 	// access group, or dev mode).
 	HasAccess bool

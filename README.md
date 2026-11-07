@@ -6,14 +6,14 @@ cash-versus-owed dashboard.
 No bank connection yet; payments are recorded by hand (see
 [docs/domain-model.md](docs/domain-model.md)).
 
-- **Backend:** Go 1.25, chi, pgx (hand-written queries; no sqlc).
+- **Backend:** Go 1.27, chi, pgx (hand-written queries; no sqlc).
 - **Frontend:** React 19 + Rsbuild + TanStack Router/Query + Tailwind.
 - **Database:** PostgreSQL 16, migrated via Goose (`cmd/migrate` one-shot).
-- **Object storage:** Finance stores **no files** in this phase, so MinIO is
-  intentionally NOT wired into the standalone Compose stack. The `S3_*` env
+- **Object storage:** Finance stores **no files** in this phase, so no S3 server is
+  intentionally wired into the standalone Compose stack. The `S3_*` env
   schema is still read by `config.Load` so the first file feature (invoice
-  PDFs) can land without config churn. MinIO is **local-dev only** and must
-  never ship to production.
+  PDFs) can land without config churn. The suite's S3 server (SeaweedFS) is **local-dev only** and
+  must never ship to production.
 
 ## Reserved ports
 

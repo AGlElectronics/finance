@@ -17,6 +17,7 @@ import (
 	"github.com/AGlElectronics/finance/backend/internal/audit"
 	"github.com/AGlElectronics/finance/backend/internal/auth"
 	"github.com/AGlElectronics/finance/backend/internal/catalog"
+	"github.com/AGlElectronics/finance/backend/internal/clientip"
 	"github.com/AGlElectronics/finance/backend/internal/config"
 	"github.com/AGlElectronics/finance/backend/internal/denlink"
 	"github.com/AGlElectronics/finance/backend/internal/service"
@@ -37,7 +38,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(chimiddleware.RequestID)
-	r.Use(chimiddleware.RealIP)
+	r.Use(clientip.Middleware(deps.Config.TrustedProxyCIDRs))
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.Timeout(60 * time.Second))
 
