@@ -71,7 +71,10 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 			Msg("object storage configured (LOCAL DEV ONLY; MinIO must never be used in production)")
 	}
 
-	den := denlink.New(pool, denlink.Config{Slug: "finance", Version: Version, InternalURL: cfg.DenInternalURL}, logger)
+	den := denlink.New(pool, denlink.Config{Slug: "finance", Version: Version, InternalURL: cfg.DenInternalURL, Mode: cfg.DenMode}, logger)
+	if err := den.Restore(ctx); err != nil {
+		logger.Warn().Err(err).Msg("den link: load failed")
+	}
 	go den.Run(ctx)
 
 	router := httpx.NewRouter(httpx.Deps{

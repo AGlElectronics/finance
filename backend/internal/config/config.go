@@ -13,6 +13,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/AGlElectronics/finance/backend/internal/clientip"
+	"github.com/AGlElectronics/finance/backend/internal/denlink"
 )
 
 const (
@@ -47,6 +48,9 @@ type Config struct {
 	// DenInternalURL replaces the host of pasted Den pairing URLs, for when
 	// Den is reachable under a different address from this backend (Docker).
 	DenInternalURL string
+	// DenMode is DEN_MODE: required keeps the API locked until the module
+	// is paired with Den; standalone (the default) does not.
+	DenMode denlink.Mode
 
 	CORSAllowedOrigins []string
 	// TrustedProxyCIDRs lists the proxies whose X-Forwarded-For entries are
@@ -77,6 +81,7 @@ func Load() (*Config, error) {
 		OIDCAudience:       getEnv("OIDC_AUDIENCE", ""),
 		AccessGroups:       splitCSV(getEnv("FINANCE_ACCESS_GROUPS", "finance-admin")),
 		DenInternalURL:     getEnv("DEN_INTERNAL_URL", ""),
+		DenMode:            denlink.Mode(getEnv("DEN_MODE", string(denlink.ModeStandalone))),
 		CORSAllowedOrigins: splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3006")),
 		ShutdownTimeout:    getEnvDuration("SHUTDOWN_TIMEOUT", 15*time.Second),
 	}
@@ -97,6 +102,9 @@ func (c *Config) validate() error {
 	var errs []string
 	if c.DatabaseURL == "" {
 		errs = append(errs, "DATABASE_URL is required")
+	}
+	if err := c.DenMode.Validate(); err != nil {
+		errs = append(errs, err.Error())
 	}
 	switch c.AuthMode {
 	case AuthModeDev, AuthModeOIDC:
