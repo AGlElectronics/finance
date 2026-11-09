@@ -1,5 +1,11 @@
 # Finance
 
+> [!WARNING]
+> ## **NOT READY FOR PRODUCTION**
+>
+> Con Services is under active development. Expect breaking changes, missing
+> features and bugs. Do not use it for real events or real data yet.
+
 Finance module for the Con Services stack — a proof of concept for
 customers, outgoing invoices, payments, expenses, a running ledger and a
 cash-versus-owed dashboard.
