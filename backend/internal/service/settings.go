@@ -64,26 +64,53 @@ type querier interface {
 
 // denSeller reads Den → Module settings → Finance (seller name, address,
 // VAT number) from the integration bundle that denlink stores on every
-// sync. paired is false when Finance has no synced bundle.
+// sync; the shared denlink does not parse module_settings itself. paired is
+// false when Finance has no synced bundle.
+//
+// Two shapes are read: the 1.0 contract
+// (module_settings.data.finance.seller.{legal_name,address,vat_id}) and
+// what Den sends today (module_settings.finance.{seller_name,
+// seller_address,vat_number}). The contract wins when both are present.
 func denSeller(ctx context.Context, q querier) (Seller, bool, error) {
 	var raw []byte
-	err := q.QueryRow(ctx, `SELECT bundle->'module_settings'->'finance' FROM den_link WHERE id = 1 AND bundle IS NOT NULL`).Scan(&raw)
+	err := q.QueryRow(ctx, `SELECT COALESCE(bundle->'module_settings', 'null'::jsonb) FROM den_link WHERE id = 1 AND bundle IS NOT NULL`).Scan(&raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Seller{}, false, nil
 	}
-	if err != nil || len(raw) == 0 {
-		return Seller{}, err == nil, err
+	if err != nil {
+		return Seller{}, false, err
 	}
-	var in struct {
-		SellerName    string `json:"seller_name"`
-		SellerAddress string `json:"seller_address"`
-		VATNumber     string `json:"vat_number"`
+	var ms struct {
+		Data struct {
+			Finance struct {
+				Seller struct {
+					LegalName string `json:"legal_name"`
+					Address   string `json:"address"`
+					VATID     string `json:"vat_id"`
+				} `json:"seller"`
+			} `json:"finance"`
+		} `json:"data"`
+		Finance struct {
+			SellerName    string `json:"seller_name"`
+			SellerAddress string `json:"seller_address"`
+			VATNumber     string `json:"vat_number"`
+		} `json:"finance"`
 	}
-	if err := json.Unmarshal(raw, &in); err != nil {
+	if err := json.Unmarshal(raw, &ms); err != nil {
 		return Seller{}, true, nil
 	}
-	return Seller{Name: strings.TrimSpace(in.SellerName), Address: strings.TrimSpace(in.SellerAddress),
-		VATNumber: strings.TrimSpace(in.VATNumber)}, true, nil
+	first := func(a, b string) string {
+		if s := strings.TrimSpace(a); s != "" {
+			return s
+		}
+		return strings.TrimSpace(b)
+	}
+	c, l := ms.Data.Finance.Seller, ms.Finance
+	return Seller{
+		Name:      first(c.LegalName, l.SellerName),
+		Address:   first(c.Address, l.SellerAddress),
+		VATNumber: first(c.VATID, l.VATNumber),
+	}, true, nil
 }
 
 func loadOverrides(ctx context.Context, q querier) (Seller, error) {

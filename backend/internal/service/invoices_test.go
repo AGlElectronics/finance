@@ -118,6 +118,15 @@ func TestIssueNeedsSellerDetails(t *testing.T) {
 	if err != nil || inv.Seller.Name != "Den Org" {
 		t.Fatalf("issue with Den seller: %v %+v", err, inv.Seller)
 	}
+	// The module-settings contract shape wins over the older one.
+	if _, err := f.pool.Exec(f.ctx, `UPDATE den_link SET bundle = '{"module_settings":{
+		"data":{"finance":{"seller":{"legal_name":"Contract Org","address":"Contract Street 3","vat_id":"AT123"}}},
+		"finance":{"seller_name":"Den Org","seller_address":"Den Street 2"}}}'`); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ = f.svc.GetSettings(f.ctx); s.Den.Name != "Contract Org" || s.Den.VATNumber != "AT123" || s.Seller.VATNumber != "DE123456789" {
+		t.Fatalf("contract shape: %+v", s)
+	}
 	// A Finance override wins over Den.
 	over := "Override Org"
 	if s, _ = f.svc.UpdateSettings(f.ctx, approver, SettingsInput{SellerName: &over}); s.Seller.Name != over || s.Sources.Name != "finance" {
