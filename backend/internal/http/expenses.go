@@ -26,7 +26,7 @@ func (h *handler) listExpenses(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) createExpense(w http.ResponseWriter, r *http.Request) {
 	var in service.ExpenseInput
-	idem, err := decodeIdem(r, &in)
+	idem, err := decodeIdem(w, r, &in)
 	if err != nil {
 		httperror.Render(w, r, err)
 		return
@@ -60,7 +60,7 @@ func (h *handler) updateExpense(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in service.ExpenseInput
-	if err := decodeJSON(r, &in); err != nil {
+	if err := decodeJSON(w, r, &in); err != nil {
 		httperror.Render(w, r, err)
 		return
 	}
@@ -80,7 +80,7 @@ func (h *handler) deleteExpense(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in := service.DeleteInput{Reason: r.URL.Query().Get("reason")}
-	if err := decodeOptional(r, &in); err != nil {
+	if err := decodeOptional(w, r, &in); err != nil {
 		httperror.Render(w, r, err)
 		return
 	}

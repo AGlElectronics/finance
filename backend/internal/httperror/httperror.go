@@ -32,6 +32,10 @@ const (
 	CodeIdempotencyReused   Code = "idempotency_key_reused"   // 422
 	CodeStorageUnavailable  Code = "storage_unavailable"      // 503
 	CodeSameApprover        Code = "approver_is_requester"    // 403
+
+	// Request body codes (authbase.DecodeJSON).
+	CodeTooLarge         Code = "request_too_large"      // 413
+	CodeUnsupportedMedia Code = "unsupported_media_type" // 415
 )
 
 // Error is the canonical service error type. Services return *Error or wrap a
@@ -161,6 +165,10 @@ func statusFor(code Code) int {
 		return http.StatusConflict
 	case CodeStorageUnavailable:
 		return http.StatusServiceUnavailable
+	case CodeTooLarge:
+		return http.StatusRequestEntityTooLarge
+	case CodeUnsupportedMedia:
+		return http.StatusUnsupportedMediaType
 	case CodeUpstream:
 		return http.StatusBadGateway
 	default:

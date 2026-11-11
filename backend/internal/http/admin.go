@@ -48,7 +48,7 @@ func (h *handler) approve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in service.DecisionInput
-	if err := decodeOptional(r, &in); err != nil {
+	if err := decodeOptional(w, r, &in); err != nil {
 		httperror.Render(w, r, err)
 		return
 	}
@@ -81,7 +81,7 @@ func (h *handler) reject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var in service.DecisionInput
-	if err := decodeJSON(r, &in); err != nil {
+	if err := decodeJSON(w, r, &in); err != nil {
 		httperror.Render(w, r, err)
 		return
 	}
@@ -113,7 +113,7 @@ func (h *handler) closePeriod(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) reopenPeriod(w http.ResponseWriter, r *http.Request) {
 	var in service.ReopenInput
-	if err := decodeJSON(r, &in); err != nil {
+	if err := decodeJSON(w, r, &in); err != nil {
 		httperror.Render(w, r, err)
 		return
 	}
@@ -135,7 +135,7 @@ func (h *handler) getSettings(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 	var in service.SettingsInput
-	if err := decodeJSON(r, &in); err != nil {
+	if err := decodeJSON(w, r, &in); err != nil {
 		httperror.Render(w, r, err)
 		return
 	}

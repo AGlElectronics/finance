@@ -9,7 +9,6 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/AGlElectronics/finance/backend/internal/config"
 	"github.com/AGlElectronics/finance/backend/internal/denlink"
 )
 
@@ -18,8 +17,9 @@ import (
 // through authentication, and other API routes answer 503. No database is
 // needed: OIDC without a verifier refuses every request before a handler runs.
 func TestDenPairingGate(t *testing.T) {
-	cfg := &config.Config{AuthMode: config.AuthModeOIDC, DenMode: denlink.ModeRequired}
-	den := denlink.New(nil, denlink.Config{Slug: "test", Mode: cfg.DenMode}, zerolog.Nop())
+	cfg := oidcConfig()
+	cfg.Den.Mode = denlink.ModeRequired
+	den := denlink.New(nil, cfg.Den, zerolog.Nop())
 	router := NewRouter(Deps{Config: cfg, Logger: zerolog.Nop(), Den: den}, "test")
 	get := func(path string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
@@ -27,14 +27,12 @@ func TestDenPairingGate(t *testing.T) {
 		return rec
 	}
 
-	for _, path := range []string{"/api/den/state"} {
-		rec := get(path)
-		if got := strings.TrimSpace(rec.Body.String()); rec.Code != http.StatusOK || got != `{"mode":"required","paired":false}` {
-			t.Errorf("GET %s = %d %s", path, rec.Code, got)
-		}
+	rec := get("/api/den/state")
+	if got := strings.TrimSpace(rec.Body.String()); rec.Code != http.StatusOK || got != `{"mode":"required","paired":false,"revoked":false}` {
+		t.Errorf("GET /api/den/state = %d %s", rec.Code, got)
 	}
 
-	rec := get("/api/customers")
+	rec = get("/api/customers")
 	var body struct {
 		Error struct {
 			Code string `json:"code"`
@@ -48,5 +46,14 @@ func TestDenPairingGate(t *testing.T) {
 	rec = get("/api/den/")
 	if rec.Code == http.StatusOK || rec.Code == http.StatusNotFound || rec.Code == http.StatusServiceUnavailable {
 		t.Errorf("GET /api/den/ = %d %s, want it refused by authentication", rec.Code, rec.Body.String())
+	}
+
+	// The role catalog stays reachable while waiting for Den.
+	req := httptest.NewRequest(http.MethodGet, "/api/role-catalog", nil)
+	req.Header.Set("Authorization", "Bearer "+cfg.HRServiceToken)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("role catalog while waiting for Den = %d", rec.Code)
 	}
 }

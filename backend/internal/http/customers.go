@@ -23,7 +23,7 @@ func (h *handler) listCustomers(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) createCustomer(w http.ResponseWriter, r *http.Request) {
 	var in service.CustomerInput
-	if err := decodeJSON(r, &in); err != nil {
+	if err := decodeJSON(w, r, &in); err != nil {
 		httperror.Render(w, r, err)
 		return
 	}
@@ -56,7 +56,7 @@ func (h *handler) updateCustomer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in service.CustomerInput
-	if err := decodeJSON(r, &in); err != nil {
+	if err := decodeJSON(w, r, &in); err != nil {
 		httperror.Render(w, r, err)
 		return
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/AGlElectronics/finance/backend/internal/actor"
 	"github.com/AGlElectronics/finance/backend/internal/audit"
 	"github.com/AGlElectronics/finance/backend/internal/auth"
+	"github.com/AGlElectronics/finance/backend/internal/authbase"
 	"github.com/AGlElectronics/finance/backend/internal/catalog"
 	"github.com/AGlElectronics/finance/backend/internal/clientip"
 	"github.com/AGlElectronics/finance/backend/internal/config"
@@ -42,7 +43,10 @@ type Deps struct {
 // NewRouter wires the chi router with middleware, CORS and routes.
 func NewRouter(deps Deps, version string) http.Handler {
 	r := chi.NewRouter()
+	cfg := deps.Config
 
+	r.Use(cfg.Auth.StripDevHeaders)
+	r.Use(authbase.SecurityHeaders)
 	r.Use(chimiddleware.RequestID)
 	r.Use(clientip.Middleware(deps.Config.TrustedProxyCIDRs))
 	r.Use(chimiddleware.Recoverer)
@@ -61,9 +65,10 @@ func NewRouter(deps Deps, version string) http.Handler {
 	r.Use(hlog.RequestIDHandler("request_id", "X-Request-ID"))
 
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   deps.Config.CORSAllowedOrigins,
-		AllowedMethods:   []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Content-Type", "Authorization", "X-Dev-User", "X-Request-ID", "Idempotency-Key"},
+		AllowedOrigins: deps.Config.CORSAllowedOrigins,
+		AllowedMethods: []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
+		// X-Dev-User and X-Dev-Groups only in dev mode.
+		AllowedHeaders:   cfg.Auth.AllowedHeaders("Idempotency-Key"),
 		ExposedHeaders:   []string{"X-Request-ID", "Idempotent-Replayed", "Content-Disposition"},
 		AllowCredentials: true,
 		MaxAge:           300,
@@ -73,19 +78,36 @@ func NewRouter(deps Deps, version string) http.Handler {
 	r.Get("/livez", health.livez)
 	r.Get("/readyz", health.readyz)
 
-	r.Get("/api/role-catalog", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, catalog.Self(deps.Config.RoleGroups))
-	})
+	// HR's service token or any staff sign-in (no Finance role needed).
+	r.Get("/api/role-catalog", catalog.Handler(catalog.Self(cfg.RoleGroups), func(r *http.Request) bool {
+		if catalog.ServiceToken(r, cfg.HRServiceToken) {
+			return true
+		}
+		_, err := auth.Identify(r, cfg, deps.OIDCVerifier)
+		return err == nil
+	}))
 
 	den := deps.Den
 	if den == nil {
-		den = denlink.New(deps.Pool, denlink.Config{Slug: "finance", Version: version, Mode: deps.Config.DenMode}, deps.Logger)
+		dc := cfg.Den
+		dc.Version = version
+		den = denlink.New(deps.Pool, dc, deps.Logger)
 	}
 	r.Get("/api/brand", den.BrandHandler("/api/brand"))
 	r.Get("/api/brand/{role}", den.AssetHandler)
 	r.Get("/api/den/state", den.StateHandler)
 
-	cfg := deps.Config
+	limiter := authbase.NewRateLimiter(authbase.RateLimitOptions{
+		Rate: cfg.RateLimit, Burst: cfg.RateBurst,
+		Key: authbase.BySubject(func(r *http.Request) (authbase.UserKey, bool) {
+			a, ok := actor.FromContext(r.Context())
+			if !ok {
+				return authbase.UserKey{}, false
+			}
+			return authbase.UserKey{Issuer: a.Issuer, Subject: a.Subject}, true
+		}),
+	})
+
 	auditWriter := audit.NewWriter(deps.Pool, deps.Logger)
 	svc := service.New(deps.Pool, auditWriter, service.Options{
 		Currency:               cfg.Currency,
@@ -108,6 +130,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 	r.Route("/api", func(api chi.Router) {
 		api.Use(den.RequirePaired)
 		api.Use(auth.Middleware(deps.Config, deps.OIDCVerifier))
+		api.Use(limiter.Middleware)
 
 		api.Get("/me", meHandler(deps.Config))
 		prefs := den.PreferencesHandler(func(r *http.Request) (string, string, bool) {
@@ -196,7 +219,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 func meHandler(cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		a, _ := actor.FromContext(r.Context())
-		out := map[string]any{"username": "", "auth_mode": cfg.AuthMode, "has_access": false,
+		out := map[string]any{"username": "", "auth_mode": cfg.Auth.AuthMode, "has_access": false,
 			"groups": []string{}, "roles": []string{}, "permissions": []access.Permission{}}
 		if a != nil {
 			out["username"], out["has_access"] = a.Username, a.HasAccess

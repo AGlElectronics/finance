@@ -35,7 +35,7 @@ func (h *handler) listInvoices(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) createInvoice(w http.ResponseWriter, r *http.Request) {
 	var in service.InvoiceInput
-	idem, err := decodeIdem(r, &in)
+	idem, err := decodeIdem(w, r, &in)
 	if err != nil {
 		httperror.Render(w, r, err)
 		return
@@ -79,7 +79,7 @@ func (h *handler) updateInvoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in service.InvoiceInput
-	if err := decodeJSON(r, &in); err != nil {
+	if err := decodeJSON(w, r, &in); err != nil {
 		httperror.Render(w, r, err)
 		return
 	}
@@ -111,7 +111,7 @@ func (h *handler) issueInvoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in service.IssueInput
-	if err := decodeOptional(r, &in); err != nil {
+	if err := decodeOptional(w, r, &in); err != nil {
 		httperror.Render(w, r, err)
 		return
 	}
@@ -130,7 +130,7 @@ func (h *handler) voidInvoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in service.VoidInput
-	if err := decodeJSON(r, &in); err != nil {
+	if err := decodeJSON(w, r, &in); err != nil {
 		httperror.Render(w, r, err)
 		return
 	}
@@ -149,7 +149,7 @@ func (h *handler) addPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in service.PaymentInput
-	idem, err := decodeIdem(r, &in)
+	idem, err := decodeIdem(w, r, &in)
 	if err != nil {
 		httperror.Render(w, r, err)
 		return
@@ -169,7 +169,7 @@ func (h *handler) createCreditNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in service.CreditNoteInput
-	idem, err := decodeIdem(r, &in)
+	idem, err := decodeIdem(w, r, &in)
 	if err != nil {
 		httperror.Render(w, r, err)
 		return
@@ -213,7 +213,7 @@ func (h *handler) createRefund(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in service.RefundInput
-	idem, err := decodeIdem(r, &in)
+	idem, err := decodeIdem(w, r, &in)
 	if err != nil {
 		httperror.Render(w, r, err)
 		return

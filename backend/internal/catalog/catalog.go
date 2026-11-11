@@ -1,29 +1,38 @@
-// Package catalog serves Finance's role catalog.
+// Package catalog serves Finance's role catalog (GET /api/role-catalog).
 //
-// Contract: each Con Services module serves a public `GET /api/role-catalog`
-// returning
-//
-//	{"module","display_name","description","roles":[{"key","label",
-//	  "description","group","assignable","scope","permissions","note"}]}
-//
-// HR aggregates these catalogs (ROLE_CATALOG_SOURCES) into its access picker
-// and assigns a role by adding the person to the role's IdP `group`.
+// Contract (con-services docs: concepts/role-catalog): the catalog lists
+// every role with the IdP group that grants it, whether it is privileged
+// and what it permits. HR reads it with HR_SERVICE_TOKEN; a person signed in
+// to the staff realm may read it too. HR assigns a role by adding the person
+// to the role's group.
 package catalog
 
-import "github.com/AGlElectronics/finance/backend/internal/access"
+import (
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
+	"encoding/json"
+	"net/http"
+	"strings"
+
+	"github.com/AGlElectronics/finance/backend/internal/access"
+	"github.com/AGlElectronics/finance/backend/internal/groupmatch"
+)
 
 // Role is one entry in the module's catalog.
 type Role struct {
-	Key         string   `json:"key"`
-	Label       string   `json:"label"`
-	Description string   `json:"description"`
-	Group       string   `json:"group"`
-	Assignable  bool     `json:"assignable"`
-	Scope       string   `json:"scope"`
-	Permissions []string `json:"permissions"`
-	Note        string   `json:"note,omitempty"`
-	// Default roles are ticked for every new onboarding; HR can untick them.
-	Default bool `json:"default,omitempty"`
+	Key         string `json:"key"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
+	// Group is the stored (normalised) group; GroupDisplay as configured.
+	Group        string   `json:"group"`
+	GroupDisplay string   `json:"group_display"`
+	Assignable   bool     `json:"assignable"`
+	Default      bool     `json:"default"`
+	Scope        string   `json:"scope"`
+	Privileged   bool     `json:"privileged"`
+	Dynamic      bool     `json:"dynamic"`
+	Permissions  []string `json:"permissions"`
 }
 
 // Module is the catalog document.
@@ -31,10 +40,9 @@ type Module struct {
 	Module      string `json:"module"`
 	DisplayName string `json:"display_name"`
 	Description string `json:"description"`
-	Roles       []Role `json:"roles"`
-	Source      string `json:"source"`
-	Status      string `json:"status"` // ok | error
-	Error       string `json:"error,omitempty"`
+	// Revision changes whenever the list changes (also the ETag).
+	Revision string `json:"revision"`
+	Roles    []Role `json:"roles"`
 }
 
 var roleText = map[string][2]string{
@@ -48,35 +56,80 @@ var roleText = map[string][2]string{
 		"Sees invoices, expenses, the ledger and the audit log; changes nothing. For accountants and auditors."},
 }
 
+// privileged roles change settings or release money (four-eyes approval).
+var privileged = map[string]bool{access.RoleAdmin: true, access.RoleApprover: true}
+
 // Self is Finance's own role catalog. roleGroups is config.RoleGroups; the
 // first group of each role is the one HR assigns.
-func Self(roleGroups map[string][]string) Module {
+func Self(roleGroups map[string][]groupmatch.Grant) Module {
 	roles := make([]Role, 0, len(access.Roles))
 	for _, key := range access.Roles {
-		group := key
+		grant := groupmatch.NewGrant(key)
 		if gs := roleGroups[key]; len(gs) > 0 {
-			group = gs[0]
+			grant = gs[0]
 		}
 		perms := []string{}
 		for _, p := range access.Grants[key] {
 			perms = append(perms, string(p))
 		}
 		roles = append(roles, Role{
-			Key:         key,
-			Label:       roleText[key][0],
-			Description: roleText[key][1],
-			Group:       group,
-			Assignable:  true,
-			Scope:       "global",
-			Permissions: perms,
+			Key:          key,
+			Label:        roleText[key][0],
+			Description:  roleText[key][1],
+			Group:        grant.Stored,
+			GroupDisplay: grant.Display,
+			Assignable:   true,
+			Scope:        "organization",
+			Privileged:   privileged[key],
+			Permissions:  perms,
 		})
 	}
-	return Module{
+	m := Module{
 		Module:      "finance",
 		DisplayName: "Finance",
 		Description: "Invoices and money tracking.",
-		Source:      "self",
-		Status:      "ok",
 		Roles:       roles,
 	}
+	b, _ := json.Marshal(roles)
+	sum := sha256.Sum256(b)
+	m.Revision = hex.EncodeToString(sum[:8])
+	return m
+}
+
+// Handler serves the catalog. allowed decides whether the caller may read
+// it (HR's service token or a staff sign-in); it answers 401 otherwise.
+func Handler(m Module, allowed func(r *http.Request) bool) http.HandlerFunc {
+	etag := `"` + m.Revision + `"`
+	body, _ := json.Marshal(m)
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !allowed(r) {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"code":"unauthorized","message":"authentication required"}}` + "\n"))
+			return
+		}
+		w.Header().Set("ETag", etag)
+		w.Header().Set("Cache-Control", "private, no-cache")
+		if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_, _ = w.Write(append(body, '\n'))
+	}
+}
+
+// ServiceToken reports whether r carries the HR service token (constant
+// time). An empty configured token never matches.
+func ServiceToken(r *http.Request, want string) bool {
+	if want == "" {
+		return false
+	}
+	h := r.Header.Get("Authorization")
+	const p = "Bearer "
+	if len(h) <= len(p) || !strings.EqualFold(h[:len(p)], p) {
+		return false
+	}
+	got := strings.TrimSpace(h[len(p):])
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }

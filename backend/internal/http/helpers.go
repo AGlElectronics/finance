@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/AGlElectronics/finance/backend/internal/actor"
 	"github.com/AGlElectronics/finance/backend/internal/audit"
+	"github.com/AGlElectronics/finance/backend/internal/authbase"
 	"github.com/AGlElectronics/finance/backend/internal/httperror"
 	"github.com/AGlElectronics/finance/backend/internal/service"
 )
@@ -26,49 +28,63 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-func decodeJSON(r *http.Request, dst any) error {
-	raw, err := io.ReadAll(r.Body)
-	if err != nil {
-		return httperror.BadRequest("could not read the request body")
-	}
-	return decodeBytes(raw, dst)
+var decodeOptions = authbase.DecodeOptions{DisallowUnknownFields: true}
+
+// decodeJSON reads one JSON value (at most authbase.DefaultMaxBodyBytes)
+// into dst, rejecting unknown fields.
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
+	return asHTTPError(authbase.DecodeJSON(w, r, dst, decodeOptions))
 }
 
-func decodeBytes(raw []byte, dst any) error {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
-		if errors.Is(err, io.EOF) {
-			return httperror.BadRequest("request body is empty")
+// readBody reads the capped body and puts it back for DecodeJSON.
+func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, authbase.DefaultMaxBodyBytes))
+	if err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			return nil, httperror.New(httperror.CodeTooLarge, fmt.Sprintf("request body is larger than %d bytes", authbase.DefaultMaxBodyBytes))
 		}
-		return httperror.BadRequest("invalid JSON: " + err.Error())
+		return nil, httperror.BadRequest("could not read the request body")
 	}
-	return nil
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+	return raw, nil
 }
 
 // decodeIdem reads the body into dst and builds the idempotency identity
 // from the Idempotency-Key header, the method and path, and the body.
-func decodeIdem(r *http.Request, dst any) (service.Idem, error) {
-	raw, err := io.ReadAll(r.Body)
+func decodeIdem(w http.ResponseWriter, r *http.Request, dst any) (service.Idem, error) {
+	raw, err := readBody(w, r)
 	if err != nil {
-		return service.Idem{}, httperror.BadRequest("could not read the request body")
+		return service.Idem{}, err
 	}
-	if err := decodeBytes(raw, dst); err != nil {
+	if err := decodeJSON(w, r, dst); err != nil {
 		return service.Idem{}, err
 	}
 	return service.NewIdem(r.Header.Get("Idempotency-Key"), r.Method+" "+r.URL.Path, raw), nil
 }
 
 // decodeOptional decodes a body only when one was sent.
-func decodeOptional(r *http.Request, dst any) error {
-	raw, err := io.ReadAll(r.Body)
+func decodeOptional(w http.ResponseWriter, r *http.Request, dst any) error {
+	raw, err := readBody(w, r)
 	if err != nil {
-		return httperror.BadRequest("could not read the request body")
+		return err
 	}
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil
 	}
-	return decodeBytes(raw, dst)
+	return decodeJSON(w, r, dst)
+}
+
+// asHTTPError turns an authbase decode error into the API error type.
+func asHTTPError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var de *authbase.DecodeError
+	if errors.As(err, &de) {
+		return httperror.New(httperror.Code(de.Code), de.Message).WithCause(err)
+	}
+	return httperror.BadRequest("invalid JSON body")
 }
 
 func parseUUIDParam(r *http.Request, name string) (uuid.UUID, error) {

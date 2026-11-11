@@ -12,6 +12,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/AGlElectronics/finance/backend/internal/access"
+	"github.com/AGlElectronics/finance/backend/internal/authbase"
 	"github.com/AGlElectronics/finance/backend/internal/config"
 	"github.com/AGlElectronics/finance/backend/internal/denlink"
 	"github.com/AGlElectronics/finance/backend/internal/docstore"
@@ -26,12 +27,9 @@ type api struct {
 func newAPI(t *testing.T, threshold int64) *api {
 	t.Helper()
 	pool := testdb.New(t)
-	cfg := &config.Config{
-		AuthMode: config.AuthModeDev, DevDefaultUser: "nobody", RoleGroups: config.DefaultRoleGroups(),
-		Currency: "EUR", DefaultVATRateBp: 2100, InvoicePrefix: "FIN-", CreditNotePrefix: "FIN-CN-",
-		ApprovalThresholdCents: threshold, MaxBackdateDays: 366,
-	}
-	den := denlink.New(pool, denlink.Config{Slug: "finance", Mode: denlink.ModeStandalone}, zerolog.Nop())
+	cfg := config.ForTest()
+	cfg.ApprovalThresholdCents = threshold
+	den := denlink.New(pool, cfg.Den, zerolog.Nop())
 	router := NewRouter(Deps{Config: cfg, Pool: pool, Logger: zerolog.Nop(), Den: den, Store: docstore.NewMemory(),
 		Clock: func() time.Time { return time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC) }}, "test")
 	return &api{t: t, router: router}
@@ -117,22 +115,143 @@ func TestRoleGating(t *testing.T) {
 	}
 }
 
+// noDBRouter builds a router that needs no database (routes that never
+// reach the service layer).
+func noDBRouter(cfg *config.Config) http.Handler {
+	return NewRouter(Deps{Config: cfg, Logger: zerolog.Nop(), Den: denlink.New(nil, cfg.Den, zerolog.Nop())}, "test")
+}
+
+func oidcConfig() *config.Config {
+	cfg := config.ForTest()
+	cfg.Auth = authbase.Config{AuthMode: authbase.AuthOIDC, AppEnv: "production"}
+	cfg.HRServiceToken = "hr-dev-token"
+	return cfg
+}
+
 func TestRoleCatalog(t *testing.T) {
-	cfg := &config.Config{AuthMode: config.AuthModeDev, RoleGroups: config.DefaultRoleGroups()}
-	cfg.RoleGroups[access.RoleApprover] = []string{"treasurer", "board"}
-	router := NewRouter(Deps{Config: cfg, Logger: zerolog.Nop(), Den: denlink.New(nil, denlink.Config{Slug: "finance"}, zerolog.Nop())}, "test")
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, httptest.NewRequest("GET", "/api/role-catalog", nil))
+	cfg := oidcConfig()
+	cfg.RoleGroups[access.RoleApprover] = config.Grants("/Treasurer, board")
+	router := noDBRouter(cfg)
+	get := func(auth string, extra ...string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/api/role-catalog", nil)
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		for i := 0; i+1 < len(extra); i += 2 {
+			req.Header.Set(extra[i], extra[i+1])
+		}
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	for _, bad := range []string{"", "Bearer wrong", "Basic aHI6dG9rZW4="} {
+		rec := get(bad)
+		if rec.Code != 401 || !strings.Contains(rec.Body.String(), `"unauthorized"`) {
+			t.Errorf("catalog with %q = %d %s", bad, rec.Code, rec.Body.String())
+		}
+	}
+	rec := get("Bearer hr-dev-token")
+	want(t, rec, 200)
 	var cat struct {
-		Roles []struct {
-			Key, Group  string
-			Permissions []string
+		Module, Revision string
+		Roles            []struct {
+			K          string `json:"key"`
+			G          string `json:"group"`
+			GD         string `json:"group_display"`
+			Privileged bool
+			Scope      string
 		}
 	}
 	decode(t, rec, &cat)
-	if len(cat.Roles) != 4 || cat.Roles[1].Key != "finance_approver" || cat.Roles[1].Group != "treasurer" {
-		t.Fatalf("catalog = %+v", cat)
+	if len(cat.Roles) != 4 || cat.Revision == "" || rec.Header().Get("ETag") != `"`+cat.Revision+`"` {
+		t.Fatalf("catalog = %+v etag %q", cat, rec.Header().Get("ETag"))
 	}
+	r := cat.Roles[1]
+	if r.K != "finance_approver" || r.G != "treasurer" || r.GD != "/Treasurer" || !r.Privileged || r.Scope != "organization" {
+		t.Fatalf("approver role = %+v", r)
+	}
+	if !cat.Roles[0].Privileged || cat.Roles[2].Privileged || cat.Roles[3].Privileged {
+		t.Fatal("only finance_admin and finance_approver are privileged")
+	}
+	if rec := get("Bearer hr-dev-token", "If-None-Match", `"`+cat.Revision+`"`); rec.Code != 304 {
+		t.Fatalf("If-None-Match = %d", rec.Code)
+	}
+
+	// In dev mode a dev sign-in counts as a staff sign-in.
+	dev := config.ForTest()
+	rec = httptest.NewRecorder()
+	noDBRouter(dev).ServeHTTP(rec, httptest.NewRequest("GET", "/api/role-catalog", nil))
+	want(t, rec, 200)
+}
+
+func TestHardening(t *testing.T) {
+	// Security headers on every API answer.
+	router := noDBRouter(oidcConfig())
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest("GET", "/api/den/state", nil))
+	for h, v := range authbase.APISecurityHeaders {
+		if rec.Header().Get(h) != v {
+			t.Errorf("%s = %q, want %q", h, rec.Header().Get(h), v)
+		}
+	}
+	// Den state carries the revoked flag of the shared denlink.
+	if body := strings.TrimSpace(rec.Body.String()); body != `{"mode":"standalone","paired":false,"revoked":false}` {
+		t.Errorf("den state = %s", body)
+	}
+
+	// CORS lets the dev headers through only in dev mode.
+	preflight := func(cfg *config.Config) string {
+		cfg.CORSAllowedOrigins = []string{"http://localhost:3006"}
+		req := httptest.NewRequest("OPTIONS", "/api/invoices", nil)
+		req.Header.Set("Origin", "http://localhost:3006")
+		req.Header.Set("Access-Control-Request-Method", "POST")
+		req.Header.Set("Access-Control-Request-Headers", "X-Dev-User")
+		rec := httptest.NewRecorder()
+		noDBRouter(cfg).ServeHTTP(rec, req)
+		return rec.Header().Get("Access-Control-Allow-Headers")
+	}
+	if got := preflight(oidcConfig()); strings.Contains(got, "X-Dev-User") {
+		t.Errorf("OIDC mode allows X-Dev-User through CORS: %q", got)
+	}
+	if got := preflight(config.ForTest()); !strings.Contains(got, "X-Dev-User") {
+		t.Errorf("dev mode should allow X-Dev-User: %q", got)
+	}
+
+	// Dev headers do not sign anyone in outside dev mode.
+	req := httptest.NewRequest("GET", "/api/me", nil)
+	req.Header.Set("X-Dev-User", "mallory")
+	rec = httptest.NewRecorder()
+	noDBRouter(oidcConfig()).ServeHTTP(rec, req)
+	if rec.Code != 500 && rec.Code != 401 {
+		t.Errorf("X-Dev-User in OIDC mode = %d", rec.Code)
+	}
+}
+
+func TestRateLimitAndBodyCap(t *testing.T) {
+	cfg := config.ForTest()
+	cfg.RateLimit, cfg.RateBurst = 0.001, 3
+	router := noDBRouter(cfg)
+	codes := []int{}
+	for i := 0; i < 4; i++ {
+		req := httptest.NewRequest("GET", "/api/me", nil)
+		req.Header.Set("X-Dev-User", "bea")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		codes = append(codes, rec.Code)
+		if rec.Code == 429 && (rec.Header().Get("Retry-After") == "" || !strings.Contains(rec.Body.String(), "rate_limited")) {
+			t.Errorf("429 without Retry-After or code: %v %s", rec.Header(), rec.Body.String())
+		}
+	}
+	if codes[2] != 200 || codes[3] != 429 {
+		t.Fatalf("codes = %v, want three 200 then 429", codes)
+	}
+	// Another person has their own bucket.
+	req := httptest.NewRequest("GET", "/api/me", nil)
+	req.Header.Set("X-Dev-User", "aki")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	want(t, rec, 200)
 }
 
 func TestMoneyFlowOverHTTP(t *testing.T) {
