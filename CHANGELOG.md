@@ -179,6 +179,11 @@ counts rebuilds of the same version. Rebuilds get no entry here.
 
 ### Changed
 
+- The shared `denlink` copy can fetch a module-setting secret from Den,
+  list the organisation's paired modules, and check a call Den makes into
+  Finance. Den errors in the log now start with a lowercase letter. The
+  sentence on the Den connection page is unchanged. Finance does not send
+  mail, so it does not fetch an SMTP password.
 - **BREAKING:** the backend accepts only **access tokens** whose audience
   (`aud`) contains `OIDC_AUDIENCE`, now `finance-api` by default (was the
   client id `finance-spa`); ID tokens are refused. The web app sends the
