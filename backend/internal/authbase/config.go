@@ -39,11 +39,16 @@ type Config struct {
 	AppEnv string
 	// AuthMode is AUTH_MODE; empty means oidc.
 	AuthMode AuthMode
+	// TrustedProxies is TRUSTED_PROXY_CIDRS: the proxies whose
+	// X-Forwarded-For is believed (see TrustedProxies.ClientAddr). The zero
+	// value trusts nobody.
+	TrustedProxies TrustedProxies
 }
 
-// FromEnv reads AUTH_MODE (default oidc) and APP_ENV (default production)
-// through getenv and validates them. A backend must refuse to start when it
-// returns an error.
+// FromEnv reads AUTH_MODE (default oidc), APP_ENV (default production) and
+// TRUSTED_PROXY_CIDRS (default DefaultTrustedProxyCIDRs, "none" for no
+// proxy) through getenv and validates them. A backend must refuse to start
+// when it returns an error.
 func FromEnv(getenv func(string) string) (Config, error) {
 	c := Config{
 		AppEnv:   NormalizeAppEnv(getenv(EnvAppEnv)),
@@ -52,6 +57,15 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	if c.AuthMode == "" {
 		c.AuthMode = DefaultAuthMode
 	}
+	proxies := getenv(EnvTrustedProxies)
+	if strings.TrimSpace(proxies) == "" {
+		proxies = DefaultTrustedProxyCIDRs
+	}
+	tp, err := ParseTrustedProxies(proxies)
+	if err != nil {
+		return c, err
+	}
+	c.TrustedProxies = tp
 	return c, c.Validate()
 }
 

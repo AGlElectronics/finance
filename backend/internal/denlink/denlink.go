@@ -83,13 +83,17 @@ type Brand struct {
 	Assets           map[string]string `json:"assets"`
 }
 
-// Bundle is what Den returns from /api/v1/integrations/bundle.
+// Bundle is what Den returns from /api/v1/integrations/bundle. It is stored
+// as received (den_link.bundle), so every field survives a restart.
 type Bundle struct {
 	Brand    Brand `json:"brand"`
 	Settings struct {
 		Data      map[string]any `json:"data"`
 		UpdatedAt *string        `json:"updated_at"`
 	} `json:"settings"`
+	// ModuleSettings is nil when Den sends none (older Den, or a bundle
+	// stored before Den had module settings).
+	ModuleSettings *ModuleSettings `json:"module_settings,omitempty"`
 }
 
 // Status is shown on the module's settings page.
@@ -435,6 +439,17 @@ func (c *Client) BoolSetting(key string) (value, ok bool) {
 	}
 	bv, isBool := v.(bool)
 	return bv, isBool
+}
+
+// ModuleSettings returns Den's module settings for this module, or nil
+// when the module is standalone or Den sends none. The result's methods
+// are safe on nil, so c.ModuleSettings().Days("wiki.revision_retention_days")
+// needs no check first. Do not modify it.
+func (c *Client) ModuleSettings() *ModuleSettings {
+	if b := c.Bundle(); b != nil {
+		return b.ModuleSettings
+	}
+	return nil
 }
 
 // OrganizationName is Den's resolved organisation name ("" when standalone).
@@ -804,8 +819,7 @@ func (c *Client) PreferencesHandler(identity Identity) http.HandlerFunc {
 		var in struct {
 			Theme string `json:"theme"`
 		}
-		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&in); err != nil {
-			writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		if !decodeBody(w, r, &in) {
 			return
 		}
 		switch in.Theme {
@@ -989,8 +1003,7 @@ func (c *Client) PairHandler(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		PairingURL string `json:"pairing_url"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&in); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+	if !decodeBody(w, r, &in) {
 		return
 	}
 	s, err := c.Pair(r.Context(), in.PairingURL)
@@ -1023,6 +1036,35 @@ func (c *Client) UnpairHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// maxRequestBody limits the bodies of denlink's own handlers (a pairing URL
+// or a theme).
+const maxRequestBody = 64 << 10
+
+// decodeBody reads one JSON value of at most maxRequestBody bytes into dst
+// and answers like authbase.DecodeJSON: 413 request_too_large or 400
+// bad_request. It is a copy rather than a call because a module may adopt
+// denlink without authbase, and the shared packages never import each
+// other. It reports whether dst was filled.
+func decodeBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody))
+	err := dec.Decode(dst)
+	if err == nil {
+		if err = dec.Decode(&struct{}{}); errors.Is(err, io.EOF) {
+			return true
+		}
+		if err == nil {
+			err = errors.New("more than one JSON value")
+		}
+	}
+	var tooBig *http.MaxBytesError
+	if errors.As(err, &tooBig) {
+		writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", fmt.Sprintf("request body is larger than %d bytes", maxRequestBody))
+		return false
+	}
+	writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+	return false
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
