@@ -122,7 +122,12 @@ counts rebuilds of the same version. Rebuilds get no entry here.
   on port 443, backend on 8080, both named `https`), and Den's address
   (`DEN_INTERNAL_URL`) uses `https://`. The cluster needs cert-manager,
   trust-manager and the platform's `conservices-internal-ca` issuer;
-  without them set `internalTLS.enabled: false`. See
+  without them set `internalTLS.enabled: false`. The chart sets the PDF
+  bucket (`S3_ENDPOINT`, `S3_BUCKET`; keys `S3_ACCESS_KEY_ID` and
+  `S3_SECRET_ACCESS_KEY` from `finance-secrets`), the role groups and the
+  money settings, and allows egress to S3 (`networkPolicy.data.s3`) by
+  default. Add the bucket to Den's `FILES_S3_BUCKETS` so it is backed up.
+  See
   [Set up Finance](https://aglelectronics.github.io/con-services/modules/finance/setup/).
 - Development: `infra/docker-compose.yml` mounts
   `infra/frontend-config/compose.json` (dev sign-in) as the web app's
