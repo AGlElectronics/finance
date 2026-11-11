@@ -139,8 +139,9 @@ type Config struct {
 	InternalURL string
 	// Mode is DEN_MODE; empty means standalone.
 	Mode Mode
-	// AppEnv is APP_ENV. Only "development" relaxes the rules below; empty
-	// means production.
+	// AppEnv is APP_ENV (FromEnv stores it through NormalizeAppEnv). Only
+	// "development", in any case, relaxes the rules below; empty means
+	// production.
 	AppEnv string
 	// AllowedHosts is DEN_ALLOWED_HOSTS: the hosts a pasted pairing URL may
 	// point at when InternalURL is empty. "*.example.org" allows every
@@ -165,7 +166,7 @@ func FromEnv(slug, version string, getenv func(string) string) (Config, error) {
 		Version:               version,
 		InternalURL:           strings.TrimSpace(getenv(EnvInternalURL)),
 		Mode:                  Mode(strings.TrimSpace(getenv(EnvMode))),
-		AppEnv:                strings.TrimSpace(getenv(EnvAppEnv)),
+		AppEnv:                NormalizeAppEnv(getenv(EnvAppEnv)),
 		AllowedHosts:          SplitHosts(getenv(EnvAllowedHosts)),
 		EncryptionKey:         getenv(EnvEncryptionKey),
 		PreviousEncryptionKey: getenv(EnvEncryptionKeyPrevious),
@@ -184,7 +185,17 @@ func SplitHosts(s string) []string {
 	return out
 }
 
-func (c Config) development() bool { return c.AppEnv == "development" }
+func (c Config) development() bool { return NormalizeAppEnv(c.AppEnv) == "development" }
+
+// NormalizeAppEnv trims and lower-cases an APP_ENV value; empty becomes
+// production. authbase has an identical copy (the packages never import each
+// other), so both read APP_ENV the same way.
+func NormalizeAppEnv(s string) string {
+	if s = strings.ToLower(strings.TrimSpace(s)); s == "" {
+		return "production"
+	}
+	return s
+}
 
 // Validate checks the settings. Outside APP_ENV=development it requires
 // DEN_LINK_ENCRYPTION_KEY, so a module refuses to start without one.

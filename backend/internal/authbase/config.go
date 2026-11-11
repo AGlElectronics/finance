@@ -46,11 +46,8 @@ type Config struct {
 // returns an error.
 func FromEnv(getenv func(string) string) (Config, error) {
 	c := Config{
-		AppEnv:   strings.ToLower(strings.TrimSpace(getenv(EnvAppEnv))),
+		AppEnv:   NormalizeAppEnv(getenv(EnvAppEnv)),
 		AuthMode: AuthMode(strings.ToLower(strings.TrimSpace(getenv(EnvAuthMode)))),
-	}
-	if c.AppEnv == "" {
-		c.AppEnv = DefaultAppEnv
 	}
 	if c.AuthMode == "" {
 		c.AuthMode = DefaultAuthMode
@@ -82,7 +79,17 @@ func (c Config) mode() AuthMode {
 }
 
 // Development reports APP_ENV=development.
-func (c Config) Development() bool { return c.AppEnv == Development }
+func (c Config) Development() bool { return NormalizeAppEnv(c.AppEnv) == Development }
+
+// NormalizeAppEnv trims and lower-cases an APP_ENV value; empty becomes
+// production. denlink has an identical copy (the packages never import each
+// other), so both read APP_ENV the same way.
+func NormalizeAppEnv(s string) string {
+	if s = strings.ToLower(strings.TrimSpace(s)); s == "" {
+		return DefaultAppEnv
+	}
+	return s
+}
 
 // DevAuth reports AUTH_MODE=dev in a valid (development) configuration.
 func (c Config) DevAuth() bool { return c.mode() == AuthDev && c.Development() }
