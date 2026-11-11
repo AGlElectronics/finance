@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
 
+	"github.com/AGlElectronics/finance/backend/internal/access"
 	"github.com/AGlElectronics/finance/backend/internal/clientip"
 	"github.com/AGlElectronics/finance/backend/internal/denlink"
 )
@@ -27,8 +29,8 @@ type Config struct {
 	HTTPAddr    string
 	DatabaseURL string
 
-	// S3 is LOCAL DEV ONLY in this scaffold (SeaweedFS). Finance stores no files
-	// yet; the bucket exists so the suite looks the same for every module.
+	// S3 stores the PDF of every issued invoice and credit note. Issuing
+	// fails with 503 storage_unavailable while S3 is not configured.
 	S3Endpoint        string
 	S3Bucket          string
 	S3AccessKeyID     string
@@ -38,12 +40,31 @@ type Config struct {
 
 	AuthMode       string
 	DevDefaultUser string
+	// DevDefaultGroups are the groups of a dev-mode caller that sends no
+	// X-Dev-Groups header (DEV_DEFAULT_GROUPS).
+	DevDefaultGroups []string
 
 	OIDCIssuerURL string
 	OIDCClientID  string
 	OIDCAudience  string
-	// AccessGroups are the IdP groups allowed to use Finance at all (OIDC mode).
-	AccessGroups []string
+	// RoleGroups maps each Finance role (access.Role*) to the IdP groups that
+	// grant it (FINANCE_ADMIN_GROUPS, FINANCE_APPROVER_GROUPS,
+	// FINANCE_BOOKKEEPER_GROUPS, FINANCE_READONLY_GROUPS).
+	RoleGroups map[string][]string
+
+	// Currency is the one currency of this installation (FINANCE_CURRENCY).
+	Currency string
+	// DefaultVATRateBp pre-fills new invoice lines (FINANCE_DEFAULT_VAT_RATE_BP).
+	DefaultVATRateBp int32
+	// InvoicePrefix and CreditNotePrefix start the document numbers
+	// (FIN-0001, FIN-CN-0001).
+	InvoicePrefix    string
+	CreditNotePrefix string
+	// ApprovalThresholdCents: voids, payments, expenses, credit notes and
+	// refunds above this amount need a second person (0 = all of them).
+	ApprovalThresholdCents int64
+	// MaxBackdateDays is how far in the past a document date may lie.
+	MaxBackdateDays int
 
 	// DenInternalURL replaces the host of pasted Den pairing URLs, for when
 	// Den is reachable under a different address from this backend (Docker).
@@ -64,26 +85,55 @@ func Load() (*Config, error) {
 	_ = godotenv.Load()
 
 	cfg := &Config{
-		AppEnv:             getEnv("APP_ENV", "development"),
-		AppBaseURL:         getEnv("APP_BASE_URL", "http://localhost:8080"),
-		HTTPAddr:           getEnv("HTTP_ADDR", ":8080"),
-		DatabaseURL:        getEnv("DATABASE_URL", ""),
-		S3Endpoint:         getEnv("S3_ENDPOINT", ""),
-		S3Bucket:           getEnv("S3_BUCKET", "finance-data-dev"),
-		S3AccessKeyID:      getEnv("S3_ACCESS_KEY_ID", ""),
-		S3SecretAccessKey:  getEnv("S3_SECRET_ACCESS_KEY", ""),
-		S3Region:           getEnv("S3_REGION", "us-east-1"),
-		S3UsePathStyle:     getEnvBool("S3_USE_PATH_STYLE", true),
-		AuthMode:           strings.ToLower(getEnv("AUTH_MODE", AuthModeDev)),
-		DevDefaultUser:     getEnv("DEV_DEFAULT_USER", "dev-finance-admin"),
-		OIDCIssuerURL:      getEnv("OIDC_ISSUER_URL", ""),
-		OIDCClientID:       getEnv("OIDC_CLIENT_ID", ""),
-		OIDCAudience:       getEnv("OIDC_AUDIENCE", ""),
-		AccessGroups:       splitCSV(getEnv("FINANCE_ACCESS_GROUPS", "finance-admin")),
+		AppEnv:            getEnv("APP_ENV", "development"),
+		AppBaseURL:        getEnv("APP_BASE_URL", "http://localhost:8080"),
+		HTTPAddr:          getEnv("HTTP_ADDR", ":8080"),
+		DatabaseURL:       getEnv("DATABASE_URL", ""),
+		S3Endpoint:        getEnv("S3_ENDPOINT", ""),
+		S3Bucket:          getEnv("S3_BUCKET", "finance-data-dev"),
+		S3AccessKeyID:     getEnv("S3_ACCESS_KEY_ID", ""),
+		S3SecretAccessKey: getEnv("S3_SECRET_ACCESS_KEY", ""),
+		S3Region:          getEnv("S3_REGION", "us-east-1"),
+		S3UsePathStyle:    getEnvBool("S3_USE_PATH_STYLE", true),
+		AuthMode:          strings.ToLower(getEnv("AUTH_MODE", AuthModeDev)),
+		DevDefaultUser:    getEnv("DEV_DEFAULT_USER", "dev-finance-admin"),
+		DevDefaultGroups:  SplitCSV(getEnv("DEV_DEFAULT_GROUPS", access.RoleAdmin)),
+		OIDCIssuerURL:     getEnv("OIDC_ISSUER_URL", ""),
+		OIDCClientID:      getEnv("OIDC_CLIENT_ID", ""),
+		OIDCAudience:      getEnv("OIDC_AUDIENCE", ""),
+		RoleGroups: map[string][]string{
+			access.RoleAdmin:      SplitCSV(getEnv("FINANCE_ADMIN_GROUPS", access.RoleAdmin)),
+			access.RoleApprover:   SplitCSV(getEnv("FINANCE_APPROVER_GROUPS", access.RoleApprover)),
+			access.RoleBookkeeper: SplitCSV(getEnv("FINANCE_BOOKKEEPER_GROUPS", access.RoleBookkeeper)),
+			access.RoleReadOnly:   SplitCSV(getEnv("FINANCE_READONLY_GROUPS", access.RoleReadOnly)),
+		},
+		Currency:           strings.ToUpper(getEnv("FINANCE_CURRENCY", "EUR")),
+		InvoicePrefix:      getEnv("FINANCE_INVOICE_PREFIX", "FIN-"),
+		CreditNotePrefix:   getEnv("FINANCE_CREDIT_NOTE_PREFIX", "FIN-CN-"),
 		DenInternalURL:     getEnv("DEN_INTERNAL_URL", ""),
 		DenMode:            denlink.Mode(getEnv("DEN_MODE", string(denlink.ModeStandalone))),
-		CORSAllowedOrigins: splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3006")),
+		CORSAllowedOrigins: SplitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3006")),
 		ShutdownTimeout:    getEnvDuration("SHUTDOWN_TIMEOUT", 15*time.Second),
+	}
+
+	var errs []string
+	if v, err := getEnvInt("FINANCE_DEFAULT_VAT_RATE_BP", 2000); err != nil {
+		errs = append(errs, err.Error())
+	} else {
+		cfg.DefaultVATRateBp = int32(v)
+	}
+	if v, err := getEnvInt("FINANCE_APPROVAL_THRESHOLD_CENTS", 0); err != nil {
+		errs = append(errs, err.Error())
+	} else {
+		cfg.ApprovalThresholdCents = v
+	}
+	if v, err := getEnvInt("FINANCE_MAX_BACKDATE_DAYS", 366); err != nil {
+		errs = append(errs, err.Error())
+	} else {
+		cfg.MaxBackdateDays = int(v)
+	}
+	if len(errs) > 0 {
+		return nil, errors.New("invalid config: " + strings.Join(errs, "; "))
 	}
 
 	trusted, err := clientip.ParseCIDRs(getEnv("TRUSTED_PROXY_CIDRS", clientip.DefaultTrustedProxies))
@@ -98,8 +148,39 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+var (
+	currencyRE = regexp.MustCompile(`^[A-Z]{3}$`)
+	prefixRE   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9/_-]{0,15}$`)
+)
+
 func (c *Config) validate() error {
 	var errs []string
+	if !currencyRE.MatchString(c.Currency) {
+		errs = append(errs, "FINANCE_CURRENCY must be a three-letter ISO 4217 code such as EUR")
+	}
+	if c.DefaultVATRateBp < 0 || c.DefaultVATRateBp > 10000 {
+		errs = append(errs, "FINANCE_DEFAULT_VAT_RATE_BP must be between 0 and 10000")
+	}
+	if !prefixRE.MatchString(c.InvoicePrefix) {
+		errs = append(errs, "FINANCE_INVOICE_PREFIX must be 1-16 letters, digits, '-', '_' or '/'")
+	}
+	if !prefixRE.MatchString(c.CreditNotePrefix) {
+		errs = append(errs, "FINANCE_CREDIT_NOTE_PREFIX must be 1-16 letters, digits, '-', '_' or '/'")
+	}
+	if c.InvoicePrefix == c.CreditNotePrefix {
+		errs = append(errs, "FINANCE_INVOICE_PREFIX and FINANCE_CREDIT_NOTE_PREFIX must differ")
+	}
+	if c.ApprovalThresholdCents < 0 {
+		errs = append(errs, "FINANCE_APPROVAL_THRESHOLD_CENTS must be 0 or more")
+	}
+	if c.MaxBackdateDays < 0 || c.MaxBackdateDays > 3660 {
+		errs = append(errs, "FINANCE_MAX_BACKDATE_DAYS must be between 0 and 3660")
+	}
+	for role, groups := range c.RoleGroups {
+		if len(groups) == 0 {
+			errs = append(errs, "the groups of role "+role+" must not be empty")
+		}
+	}
 	if c.DatabaseURL == "" {
 		errs = append(errs, "DATABASE_URL is required")
 	}
@@ -175,7 +256,30 @@ func getEnvDuration(key string, fallback time.Duration) time.Duration {
 	return parsed
 }
 
-func splitCSV(s string) []string {
+func getEnvInt(key string, fallback int64) (int64, error) {
+	v, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(v) == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a whole number, got %q", key, v)
+	}
+	return parsed, nil
+}
+
+// DefaultRoleGroups maps every role to the group of the same name, which is
+// also what the role catalog publishes.
+func DefaultRoleGroups() map[string][]string {
+	out := map[string][]string{}
+	for _, r := range access.Roles {
+		out[r] = []string{r}
+	}
+	return out
+}
+
+// SplitCSV splits a comma-separated list, dropping blanks.
+func SplitCSV(s string) []string {
 	if s == "" {
 		return nil
 	}

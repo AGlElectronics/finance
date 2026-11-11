@@ -10,6 +10,8 @@
 // and assigns a role by adding the person to the role's IdP `group`.
 package catalog
 
+import "github.com/AGlElectronics/finance/backend/internal/access"
+
 // Role is one entry in the module's catalog.
 type Role struct {
 	Key         string   `json:"key"`
@@ -35,24 +37,46 @@ type Module struct {
 	Error       string `json:"error,omitempty"`
 }
 
-// Self is Finance's own role catalog.
-func Self() Module {
+var roleText = map[string][2]string{
+	access.RoleAdmin: {"Finance admin",
+		"Everything a bookkeeper and an approver can do, plus reopening closed months, Finance settings and the Den connection."},
+	access.RoleApprover: {"Finance approver",
+		"Approves or rejects voids, payments, expenses, credit notes and refunds requested by someone else, and closes months. Cannot record money itself."},
+	access.RoleBookkeeper: {"Finance bookkeeper",
+		"Keeps customers, invoices and expenses, and requests payments, voids, credit notes and refunds."},
+	access.RoleReadOnly: {"Finance read-only",
+		"Sees invoices, expenses, the ledger and the audit log; changes nothing. For accountants and auditors."},
+}
+
+// Self is Finance's own role catalog. roleGroups is config.RoleGroups; the
+// first group of each role is the one HR assigns.
+func Self(roleGroups map[string][]string) Module {
+	roles := make([]Role, 0, len(access.Roles))
+	for _, key := range access.Roles {
+		group := key
+		if gs := roleGroups[key]; len(gs) > 0 {
+			group = gs[0]
+		}
+		perms := []string{}
+		for _, p := range access.Grants[key] {
+			perms = append(perms, string(p))
+		}
+		roles = append(roles, Role{
+			Key:         key,
+			Label:       roleText[key][0],
+			Description: roleText[key][1],
+			Group:       group,
+			Assignable:  true,
+			Scope:       "global",
+			Permissions: perms,
+		})
+	}
 	return Module{
 		Module:      "finance",
 		DisplayName: "Finance",
 		Description: "Invoices and money tracking.",
 		Source:      "self",
 		Status:      "ok",
-		Roles: []Role{
-			{
-				Key:         "finance-admin",
-				Label:       "Finance admin",
-				Description: "Full access: customers, invoices and payments.",
-				Group:       "finance-admin",
-				Assignable:  true,
-				Scope:       "global",
-				Permissions: []string{"finance.*"},
-			},
-		},
+		Roles:       roles,
 	}
 }
