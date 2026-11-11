@@ -57,7 +57,14 @@ counts rebuilds of the same version. Rebuilds get no entry here.
   name, address and VAT number, sent in the integration bundle) and can be
   overridden on Finance's Settings page, which is also where a standalone
   Finance sets them. Issuing needs a seller name and address. New API:
-  `GET /api/settings`, `PUT /api/settings`.
+  `GET /api/settings`, `PUT /api/settings`. Finance reads Den's
+  `finance.seller.legal_name`, `finance.seller.address` and
+  `finance.seller.vat_id` (the
+  [module settings contract](https://aglelectronics.github.io/con-services/concepts/module-settings/#finance-seller-details))
+  and, until Den sends those, Den's current `finance.seller_name`,
+  `finance.seller_address` and `finance.vat_number`; the contract keys win
+  field by field. Den's values are kept with the pairing, so they apply
+  right after a restart, before Den is reached again.
 - Closed months: an approver closes a month by hand
   (`POST /api/periods/{month}/close`); nothing dated in it can then be
   issued, paid, refunded, voided, recorded or changed. Only an admin can
@@ -99,7 +106,8 @@ counts rebuilds of the same version. Rebuilds get no entry here.
   front of the backend whose `X-Forwarded-For` entries are believed. The
   default, `10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1/128,fc00::/7`,
   covers the Gateway, nginx and Caddy; change it only for a proxy outside
-  the private ranges, or set `none` when no proxy is in front. See
+  the private ranges, or set `none` when no proxy is in front. An invalid
+  entry stops the backend at start-up. See
   [Client IP addresses](https://aglelectronics.github.io/con-services/operations/production/#client-ip-addresses).
 - The backend can serve HTTPS. Set `TLS_CERT_FILE` and `TLS_KEY_FILE` to a
   PEM certificate and private key; the backend re-reads both every minute,
@@ -243,7 +251,12 @@ counts rebuilds of the same version. Rebuilds get no entry here.
   needed. Rotate with `DEN_LINK_ENCRYPTION_KEY_PREVIOUS`. See
   [Secrets](https://aglelectronics.github.io/con-services/operations/secrets/#den-link-encryption-key).
 - Request bodies are limited to 1 MiB; a larger one is refused with
-  `413 request_too_large`.
+  `413 request_too_large`. Pairing with Den (`POST /api/den/pair`) and
+  saving preferences (`PUT /api/me/preferences`) accept at most 64 KiB and
+  answer `413 request_too_large` above that. These codes (`bad_request`,
+  `request_too_large`, `unsupported_media_type`, `rate_limited`) are the
+  suite-wide ones from
+  [Shared code](https://aglelectronics.github.io/con-services/concepts/shared-code/#error-codes).
 - API responses carry `X-Content-Type-Options: nosniff`,
   `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY` and
   `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`.
