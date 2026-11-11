@@ -41,6 +41,13 @@ func New(t *testing.T) *pgxpool.Pool {
 	if err != nil {
 		t.Fatalf("testdb: connect: %v", err)
 	}
+	// The first migration creates pgcrypto. Created inside a test schema it
+	// would vanish with that schema, and test packages running in parallel
+	// would race to create it; so it lives in public, created once.
+	if err := ensurePgcrypto(ctx, admin); err != nil {
+		admin.Close()
+		t.Fatalf("testdb: pgcrypto: %v", err)
+	}
 	if _, err := admin.Exec(ctx, `CREATE SCHEMA `+schema); err != nil {
 		admin.Close()
 		t.Fatalf("testdb: create schema: %v", err)
@@ -74,6 +81,21 @@ func New(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	return pool
+}
+
+func ensurePgcrypto(ctx context.Context, pool *pgxpool.Pool) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(4242001)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public`); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func withSearchPath(dsn, schema string) (string, error) {

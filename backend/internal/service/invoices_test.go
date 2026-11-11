@@ -103,10 +103,15 @@ func TestIssueNeedsSellerDetails(t *testing.T) {
 	_, err := f.svc.IssueInvoice(f.ctx, bookkeeper, id, IssueInput{})
 	wantCode(t, err, httperror.CodeValidation)
 
-	// Den's values apply when Finance has no override.
-	f.svc.opts.Den = fakeDen{DenKeySellerName: "Den Org", DenKeySellerAddress: "Den Street 2"}
+	// Den's values (module_settings.finance of the synced bundle) apply when
+	// Finance has no override.
+	if _, err := f.pool.Exec(f.ctx, `
+		INSERT INTO den_link (den_base_url, credential, bundle) VALUES ('https://den.example', 'x',
+		  '{"brand":{},"settings":{"data":{}},"module_settings":{"finance":{"seller_name":"Den Org","seller_address":"Den Street 2"}}}')`); err != nil {
+		t.Fatal(err)
+	}
 	s, err := f.svc.GetSettings(f.ctx)
-	if err != nil || s.Seller.Name != "Den Org" || s.Sources.Name != "den" || s.Sources.VATNumber != "finance" {
+	if err != nil || !s.DenPaired || s.Seller.Name != "Den Org" || s.Sources.Name != "den" || s.Sources.VATNumber != "finance" {
 		t.Fatalf("settings = %+v %v", s, err)
 	}
 	inv, err := f.svc.IssueInvoice(f.ctx, bookkeeper, id, IssueInput{})

@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/google/uuid"
@@ -10,15 +12,6 @@ import (
 	"github.com/AGlElectronics/finance/backend/internal/audit"
 	"github.com/AGlElectronics/finance/backend/internal/docstore"
 	"github.com/AGlElectronics/finance/backend/internal/httperror"
-)
-
-// Den organisation-setting keys for the seller details printed on invoices.
-// Den keeps unknown keys, so an admin can set them before Den's settings
-// page shows them.
-const (
-	DenKeySellerName      = "finance_seller_name"
-	DenKeySellerAddress   = "finance_seller_address"
-	DenKeySellerVATNumber = "finance_seller_vat_number"
 )
 
 // Seller is who issues invoices.
@@ -43,7 +36,8 @@ type Settings struct {
 	Sources SellerSources `json:"sources"`
 	// Overrides are Finance's own values; empty means "use Den's".
 	Overrides Seller `json:"overrides"`
-	// Den is what Den sends (empty when standalone or not set in Den).
+	// Den is what Den sends (Den → Module settings → Finance; empty when
+	// standalone or not set in Den).
 	Den       Seller `json:"den"`
 	DenPaired bool   `json:"den_paired"`
 
@@ -64,25 +58,32 @@ type SettingsInput struct {
 	SellerVATNumber *string `json:"seller_vat_number"`
 }
 
-func (s *Service) denSeller() (Seller, bool) {
-	if s.opts.Den == nil {
-		return Seller{}, false
-	}
-	var out Seller
-	if v, ok := s.opts.Den.Setting(DenKeySellerName); ok {
-		out.Name = strings.TrimSpace(v)
-	}
-	if v, ok := s.opts.Den.Setting(DenKeySellerAddress); ok {
-		out.Address = strings.TrimSpace(v)
-	}
-	if v, ok := s.opts.Den.Setting(DenKeySellerVATNumber); ok {
-		out.VATNumber = strings.TrimSpace(v)
-	}
-	return out, s.opts.Den.Paired()
-}
-
 type querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// denSeller reads Den → Module settings → Finance (seller name, address,
+// VAT number) from the integration bundle that denlink stores on every
+// sync. paired is false when Finance has no synced bundle.
+func denSeller(ctx context.Context, q querier) (Seller, bool, error) {
+	var raw []byte
+	err := q.QueryRow(ctx, `SELECT bundle->'module_settings'->'finance' FROM den_link WHERE id = 1 AND bundle IS NOT NULL`).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Seller{}, false, nil
+	}
+	if err != nil || len(raw) == 0 {
+		return Seller{}, err == nil, err
+	}
+	var in struct {
+		SellerName    string `json:"seller_name"`
+		SellerAddress string `json:"seller_address"`
+		VATNumber     string `json:"vat_number"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return Seller{}, true, nil
+	}
+	return Seller{Name: strings.TrimSpace(in.SellerName), Address: strings.TrimSpace(in.SellerAddress),
+		VATNumber: strings.TrimSpace(in.VATNumber)}, true, nil
 }
 
 func loadOverrides(ctx context.Context, q querier) (Seller, error) {
@@ -103,14 +104,13 @@ func pick(override, den string) (string, string) {
 	}
 }
 
-func (s *Service) resolve(over Seller) (Seller, SellerSources, Seller, bool) {
-	den, paired := s.denSeller()
+func resolve(over, den Seller) (Seller, SellerSources) {
 	var eff Seller
 	var src SellerSources
 	eff.Name, src.Name = pick(over.Name, den.Name)
 	eff.Address, src.Address = pick(over.Address, den.Address)
 	eff.VATNumber, src.VATNumber = pick(over.VATNumber, den.VATNumber)
-	return eff, src, den, paired
+	return eff, src
 }
 
 // GetSettings returns the effective settings.
@@ -119,7 +119,11 @@ func (s *Service) GetSettings(ctx context.Context) (Settings, error) {
 	if err != nil {
 		return Settings{}, httperror.Internal(err)
 	}
-	eff, src, den, paired := s.resolve(over)
+	den, paired, err := denSeller(ctx, s.pool)
+	if err != nil {
+		return Settings{}, httperror.Internal(err)
+	}
+	eff, src := resolve(over, den)
 	_, unconfigured := s.opts.Store.(docstore.Unconfigured)
 	return Settings{
 		Seller: eff, Sources: src, Overrides: over, Den: den, DenPaired: paired,
@@ -179,7 +183,11 @@ func (s *Service) sellerForIssue(ctx context.Context, tx pgx.Tx) (Seller, error)
 	if err != nil {
 		return Seller{}, err
 	}
-	eff, _, _, _ := s.resolve(over)
+	den, _, err := denSeller(ctx, tx)
+	if err != nil {
+		return Seller{}, err
+	}
+	eff, _ := resolve(over, den)
 	fields := map[string]string{}
 	if eff.Name == "" {
 		fields["seller_name"] = "set it in Finance settings or in Den"

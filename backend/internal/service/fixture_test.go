@@ -24,11 +24,6 @@ var (
 	today = time.Date(2026, 11, 11, 15, 0, 0, 0, time.UTC)
 )
 
-type fakeDen map[string]string
-
-func (d fakeDen) Setting(k string) (string, bool) { v, ok := d[k]; return v, ok }
-func (d fakeDen) Paired() bool                    { return d != nil }
-
 type fixture struct {
 	t     *testing.T
 	ctx   context.Context

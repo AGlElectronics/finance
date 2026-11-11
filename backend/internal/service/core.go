@@ -21,13 +21,6 @@ import (
 
 const dateLayout = "2006-01-02"
 
-// DenSettings reads organisation settings synced from Den; denlink.Client
-// satisfies it.
-type DenSettings interface {
-	Setting(key string) (string, bool)
-	Paired() bool
-}
-
 // Options are the installation settings the services need (see config).
 type Options struct {
 	Currency               string
@@ -38,8 +31,6 @@ type Options struct {
 	MaxBackdateDays        int
 	// Store keeps issued PDFs; nil means not configured.
 	Store docstore.Store
-	// Den supplies seller details when paired; nil when standalone.
-	Den DenSettings
 }
 
 // Service owns every Finance table. Every write runs in one transaction

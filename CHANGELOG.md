@@ -53,12 +53,11 @@ counts rebuilds of the same version. Rebuilds get no entry here.
 - Issued invoices keep a frozen copy of the customer's name, email,
   address and tax ID and of the seller's name, address and VAT number;
   editing a customer later changes only new invoices.
-- Seller details come from Den (organisation settings
-  `finance_seller_name`, `finance_seller_address`,
-  `finance_seller_vat_number`) and can be overridden on Finance's Settings
-  page, which is also where a standalone Finance sets them. Issuing needs
-  a seller name and address. New API: `GET /api/settings`,
-  `PUT /api/settings`.
+- Seller details come from Den (Den → Module settings → Finance: seller
+  name, address and VAT number, sent in the integration bundle) and can be
+  overridden on Finance's Settings page, which is also where a standalone
+  Finance sets them. Issuing needs a seller name and address. New API:
+  `GET /api/settings`, `PUT /api/settings`.
 - Closed months: an approver closes a month by hand
   (`POST /api/periods/{month}/close`); nothing dated in it can then be
   issued, paid, refunded, voided, recorded or changed. Only an admin can
