@@ -141,9 +141,10 @@ counts rebuilds of the same version. Rebuilds get no entry here.
   development`). `config.OIDC_AUDIENCE` defaults to `finance-api`. The web
   app gets `KEYCLOAK_ORIGIN` for its Content Security Policy (scheme and
   host of the sign-in address unless `frontend.securityHeaders.keycloakOrigin`
-  is set; also `denOrigin`, `s3Origin`, `extraConnectSrc`) and an
-  `emptyDir` at `/etc/nginx/snippets`, and every location that serves the
-  app sends the shared security headers. See
+  is set; also `denOrigin`, `s3Origin`, `extraConnectSrc`; `EXTRA_FRAME_SRC`
+  stays empty) and an `emptyDir` at `/etc/nginx/snippets`. Every location
+  that serves the app sends the shared security headers, and
+  `/silent-callback.html` may be framed by Finance itself. See
   [Set up Finance](https://aglelectronics.github.io/con-services/modules/finance/setup/).
 - Development: `infra/docker-compose.yml` mounts
   `infra/frontend-config/compose.json` (dev sign-in) as the web app's
@@ -179,6 +180,10 @@ counts rebuilds of the same version. Rebuilds get no entry here.
 
 ### Changed
 
+- `/silent-callback.html` may be framed by the Finance web app itself, so
+  a reload can sign in again through the existing Keycloak session. Every
+  other page still sends `frame-ancestors 'none'` and `X-Frame-Options:
+  DENY`. `EXTRA_FRAME_SRC` stays empty.
 - The shared `denlink` copy can fetch a module-setting secret from Den,
   list the organisation's paired modules, and check a call Den makes into
   Finance. Den errors in the log now start with a lowercase letter. The
@@ -271,7 +276,15 @@ counts rebuilds of the same version. Rebuilds get no entry here.
   security headers from `con-services` `shared/nginx` (not on `/api/`). Set
   `KEYCLOAK_ORIGIN` on the web app container to the sign-in server
   (for example `https://auth.con.example.org`), or the browser blocks
-  sign-in; `DEN_ORIGIN`, `S3_ORIGIN` and `EXTRA_CONNECT_SRC` are optional.
+  sign-in; `DEN_ORIGIN`, `S3_ORIGIN`, `EXTRA_CONNECT_SRC` and
+  `EXTRA_FRAME_SRC` are optional (`EXTRA_FRAME_SRC` stays empty).
   The inline scripts of `index.html` and `silent-callback.html` moved into
   `theme-init.js` and `silent-callback.js`. See
   [Nginx security headers](https://aglelectronics.github.io/con-services/concepts/shared-code/#nginx-security-headers).
+
+### Fixed
+
+- The web app image's fallback security-header files, used when
+  `/etc/nginx/snippets` cannot be written, now strip `${S3_ORIGIN}` as
+  well. A digit in that name used to leave the token in the policy, and
+  nginx then refused to start.
