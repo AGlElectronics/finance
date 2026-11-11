@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 
 	"github.com/google/uuid"
@@ -62,42 +61,27 @@ type querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// denSeller reads Den → Module settings → Finance (seller name, address,
-// VAT number) from the integration bundle that denlink stores on every
-// sync; the shared denlink does not parse module_settings itself. paired is
-// false when Finance has no synced bundle.
+// denSeller is Den → Module settings → Finance (seller name, address, VAT
+// number) from the bundle the Den link synced and stored. paired is false
+// when Finance has no synced bundle.
 //
-// Two shapes are read: the 1.0 contract
-// (module_settings.data.finance.seller.{legal_name,address,vat_id}) and
-// what Den sends today (module_settings.finance.{seller_name,
-// seller_address,vat_number}). The contract wins when both are present.
-func denSeller(ctx context.Context, q querier) (Seller, bool, error) {
-	var raw []byte
-	err := q.QueryRow(ctx, `SELECT COALESCE(bundle->'module_settings', 'null'::jsonb) FROM den_link WHERE id = 1 AND bundle IS NOT NULL`).Scan(&raw)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Seller{}, false, nil
+// The 1.0 contract is finance.seller.{legal_name,address,vat_id}
+// (FinanceSeller). Until Den sends it, Den's older flat keys
+// finance.{seller_name,seller_address,vat_number} are read as well; the
+// contract wins field by field.
+func (s *Service) denSeller() (Seller, bool) {
+	if s.opts.Den == nil || s.opts.Den.Bundle() == nil {
+		return Seller{}, false
 	}
-	if err != nil {
-		return Seller{}, false, err
+	ms := s.opts.Den.ModuleSettings()
+	c, _ := ms.FinanceSeller()
+	var legacy struct {
+		SellerName    string `json:"seller_name"`
+		SellerAddress string `json:"seller_address"`
+		VATNumber     string `json:"vat_number"`
 	}
-	var ms struct {
-		Data struct {
-			Finance struct {
-				Seller struct {
-					LegalName string `json:"legal_name"`
-					Address   string `json:"address"`
-					VATID     string `json:"vat_id"`
-				} `json:"seller"`
-			} `json:"finance"`
-		} `json:"data"`
-		Finance struct {
-			SellerName    string `json:"seller_name"`
-			SellerAddress string `json:"seller_address"`
-			VATNumber     string `json:"vat_number"`
-		} `json:"finance"`
-	}
-	if err := json.Unmarshal(raw, &ms); err != nil {
-		return Seller{}, true, nil
+	if raw, ok := ms.Section("finance"); ok {
+		_ = json.Unmarshal(raw, &legacy)
 	}
 	first := func(a, b string) string {
 		if s := strings.TrimSpace(a); s != "" {
@@ -105,12 +89,11 @@ func denSeller(ctx context.Context, q querier) (Seller, bool, error) {
 		}
 		return strings.TrimSpace(b)
 	}
-	c, l := ms.Data.Finance.Seller, ms.Finance
 	return Seller{
-		Name:      first(c.LegalName, l.SellerName),
-		Address:   first(c.Address, l.SellerAddress),
-		VATNumber: first(c.VATID, l.VATNumber),
-	}, true, nil
+		Name:      first(c.LegalName, legacy.SellerName),
+		Address:   first(c.Address, legacy.SellerAddress),
+		VATNumber: first(c.VATID, legacy.VATNumber),
+	}, true
 }
 
 func loadOverrides(ctx context.Context, q querier) (Seller, error) {
@@ -146,10 +129,7 @@ func (s *Service) GetSettings(ctx context.Context) (Settings, error) {
 	if err != nil {
 		return Settings{}, httperror.Internal(err)
 	}
-	den, paired, err := denSeller(ctx, s.pool)
-	if err != nil {
-		return Settings{}, httperror.Internal(err)
-	}
+	den, paired := s.denSeller()
 	eff, src := resolve(over, den)
 	_, unconfigured := s.opts.Store.(docstore.Unconfigured)
 	return Settings{
@@ -210,10 +190,7 @@ func (s *Service) sellerForIssue(ctx context.Context, tx pgx.Tx) (Seller, error)
 	if err != nil {
 		return Seller{}, err
 	}
-	den, _, err := denSeller(ctx, tx)
-	if err != nil {
-		return Seller{}, err
-	}
+	den, _ := s.denSeller()
 	eff, _ := resolve(over, den)
 	fields := map[string]string{}
 	if eff.Name == "" {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/AGlElectronics/finance/backend/internal/audit"
 	"github.com/AGlElectronics/finance/backend/internal/db"
+	"github.com/AGlElectronics/finance/backend/internal/denlink"
 	"github.com/AGlElectronics/finance/backend/internal/docstore"
 	"github.com/AGlElectronics/finance/backend/internal/httperror"
 )
@@ -31,6 +32,15 @@ type Options struct {
 	MaxBackdateDays        int
 	// Store keeps issued PDFs; nil means not configured.
 	Store docstore.Store
+	// Den is the pairing with Den (a *denlink.Client); nil means standalone.
+	Den DenLink
+}
+
+// DenLink is what the services read from the pairing with Den: the last
+// synced bundle and its module settings.
+type DenLink interface {
+	Bundle() *denlink.Bundle
+	ModuleSettings() *denlink.ModuleSettings
 }
 
 // Service owns every Finance table. Every write runs in one transaction

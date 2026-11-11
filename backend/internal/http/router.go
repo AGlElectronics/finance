@@ -117,6 +117,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 		ApprovalThresholdCents: cfg.ApprovalThresholdCents,
 		MaxBackdateDays:        cfg.MaxBackdateDays,
 		Store:                  deps.Store,
+		Den:                    den,
 	})
 	if deps.Clock != nil {
 		svc.SetClock(deps.Clock)

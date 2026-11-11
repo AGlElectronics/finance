@@ -12,6 +12,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/AGlElectronics/finance/backend/internal/audit"
+	"github.com/AGlElectronics/finance/backend/internal/denlink"
 	"github.com/AGlElectronics/finance/backend/internal/docstore"
 	"github.com/AGlElectronics/finance/backend/internal/httperror"
 	"github.com/AGlElectronics/finance/backend/internal/testdb"
@@ -30,20 +31,23 @@ type fixture struct {
 	pool  *pgxpool.Pool
 	svc   *Service
 	store *docstore.Memory
-	cust  uuid.UUID
-	n     int
+	// den is the service's Den link; Restore it after changing den_link.
+	den  *denlink.Client
+	cust uuid.UUID
+	n    int
 }
 
 func newFixture(t *testing.T, threshold int64) *fixture {
 	t.Helper()
 	pool := testdb.New(t)
 	store := docstore.NewMemory()
+	den := denlink.New(pool, denlink.Config{Slug: "finance", Mode: denlink.ModeStandalone, AppEnv: "development"}, zerolog.Nop())
 	svc := New(pool, audit.NewWriter(pool, zerolog.Nop()), Options{
 		Currency: "EUR", DefaultVATRateBp: 2100, InvoicePrefix: "FIN-", CreditNotePrefix: "FIN-CN-",
-		ApprovalThresholdCents: threshold, MaxBackdateDays: 366, Store: store,
+		ApprovalThresholdCents: threshold, MaxBackdateDays: 366, Store: store, Den: den,
 	})
 	svc.SetClock(func() time.Time { return today })
-	f := &fixture{t: t, ctx: context.Background(), pool: pool, svc: svc, store: store}
+	f := &fixture{t: t, ctx: context.Background(), pool: pool, svc: svc, store: store, den: den}
 	name, addr, vat := "Con Org e.V.", "Main Street 1\n12345 Town", "DE123456789"
 	if _, err := svc.UpdateSettings(f.ctx, approver, SettingsInput{SellerName: &name, SellerAddress: &addr, SellerVATNumber: &vat}); err != nil {
 		t.Fatalf("settings: %v", err)

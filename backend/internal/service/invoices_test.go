@@ -103,14 +103,28 @@ func TestIssueNeedsSellerDetails(t *testing.T) {
 	_, err := f.svc.IssueInvoice(f.ctx, bookkeeper, id, IssueInput{})
 	wantCode(t, err, httperror.CodeValidation)
 
-	// Den's values (module_settings.finance of the synced bundle) apply when
-	// Finance has no override.
+	// Standalone: nothing from Den.
+	s, err := f.svc.GetSettings(f.ctx)
+	if err != nil || s.DenPaired || s.Den != (Seller{}) {
+		t.Fatalf("standalone settings = %+v %v", s, err)
+	}
+	restore := func() {
+		t.Helper()
+		if err := f.den.Restore(f.ctx); err != nil {
+			t.Fatalf("restore: %v", err)
+		}
+	}
+
+	// Den's values apply when Finance has no override. Den sends its older
+	// flat keys (module_settings.finance.seller_name, …) until it emits the
+	// contract shape.
 	if _, err := f.pool.Exec(f.ctx, `
 		INSERT INTO den_link (den_base_url, credential, bundle) VALUES ('https://den.example', 'x',
-		  '{"brand":{},"settings":{"data":{}},"module_settings":{"finance":{"seller_name":"Den Org","seller_address":"Den Street 2"}}}')`); err != nil {
+		  '{"brand":{},"settings":{"data":{}},"module_settings":{"finance":{"seller_name":"Den Org","seller_address":"Den Street 2"},"updated_at":"2026-11-11T09:30:00Z"}}')`); err != nil {
 		t.Fatal(err)
 	}
-	s, err := f.svc.GetSettings(f.ctx)
+	restore()
+	s, err = f.svc.GetSettings(f.ctx)
 	if err != nil || !s.DenPaired || s.Seller.Name != "Den Org" || s.Sources.Name != "den" || s.Sources.VATNumber != "finance" {
 		t.Fatalf("settings = %+v %v", s, err)
 	}
@@ -118,14 +132,25 @@ func TestIssueNeedsSellerDetails(t *testing.T) {
 	if err != nil || inv.Seller.Name != "Den Org" {
 		t.Fatalf("issue with Den seller: %v %+v", err, inv.Seller)
 	}
-	// The module-settings contract shape wins over the older one.
-	if _, err := f.pool.Exec(f.ctx, `UPDATE den_link SET bundle = '{"module_settings":{
+	// The module-settings contract shape (finance.seller under data).
+	if _, err := f.pool.Exec(f.ctx, `UPDATE den_link SET bundle = '{"brand":{},"settings":{"data":{}},"module_settings":{
 		"data":{"finance":{"seller":{"legal_name":"Contract Org","address":"Contract Street 3","vat_id":"AT123"}}},
-		"finance":{"seller_name":"Den Org","seller_address":"Den Street 2"}}}'`); err != nil {
+		"updated_at":"2026-11-11T09:30:00Z"}}'`); err != nil {
 		t.Fatal(err)
 	}
-	if s, _ = f.svc.GetSettings(f.ctx); s.Den.Name != "Contract Org" || s.Den.VATNumber != "AT123" || s.Seller.VATNumber != "DE123456789" {
+	restore()
+	if s, _ = f.svc.GetSettings(f.ctx); s.Den.Name != "Contract Org" || s.Den.Address != "Contract Street 3" || s.Den.VATNumber != "AT123" || s.Seller.VATNumber != "DE123456789" {
 		t.Fatalf("contract shape: %+v", s)
+	}
+	// Within the finance section the contract wins field by field over the
+	// flat keys; a field only the flat keys set still counts.
+	if _, err := f.pool.Exec(f.ctx, `UPDATE den_link SET bundle = '{"brand":{},"settings":{"data":{}},"module_settings":{
+		"data":{"finance":{"seller":{"legal_name":"Contract Org"},"seller_name":"Den Org","seller_address":"Den Street 2","vat_number":"AT999"}}}}'`); err != nil {
+		t.Fatal(err)
+	}
+	restore()
+	if s, _ = f.svc.GetSettings(f.ctx); s.Den.Name != "Contract Org" || s.Den.Address != "Den Street 2" || s.Den.VATNumber != "AT999" {
+		t.Fatalf("mixed shape: %+v", s.Den)
 	}
 	// A Finance override wins over Den.
 	over := "Override Org"
