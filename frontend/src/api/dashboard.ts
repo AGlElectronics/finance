@@ -18,6 +18,7 @@ export type Dashboard = {
   net_total_cents: number;
   draft_count: number;
   open_count: number;
+  pending_approvals: number;
   months: MonthFlow[];
   recent_invoices: InvoiceSummary[];
 };

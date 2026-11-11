@@ -1,10 +1,16 @@
-// Money helpers. The API speaks integer cents (EUR only in this POC).
+// Money helpers. The API speaks integer cents in the installation's one
+// currency (FINANCE_CURRENCY, EUR by default).
 
-const fmt = new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' });
+const formatters = new Map<string, Intl.NumberFormat>();
 
-/** 123456 -> "1.234,56 €" */
-export function formatCents(cents: number): string {
-  return fmt.format(cents / 100);
+/** 123456 -> "1.234,56 €" (in the given ISO currency, EUR by default). */
+export function formatCents(cents: number, currency = 'EUR'): string {
+  let f = formatters.get(currency);
+  if (!f) {
+    f = new Intl.NumberFormat('de-DE', { style: 'currency', currency });
+    formatters.set(currency, f);
+  }
+  return f.format(cents / 100);
 }
 
 /** "12,50" / "12.50" -> 1250; null when not a number. */

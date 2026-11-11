@@ -2,10 +2,12 @@ import { Link, Outlet, useRouterState } from '@tanstack/react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowDownUp,
+  CheckCheck,
   Landmark,
   LayoutDashboard,
   LogOut,
   Receipt,
+  ScrollText,
   Settings,
   ShieldX,
   Users,
@@ -13,7 +15,7 @@ import {
 } from 'lucide-react';
 
 import { isDenPairingRequired, useDenState } from '@/api/den';
-import { getMe } from '@/api/me';
+import { can, getMe, type Permission } from '@/api/me';
 import { isOidcAuthMode, signOutOidc } from '@/auth/oidc';
 import { DenConnection } from '@/components/DenConnection';
 import { ThemeToggle } from '@/components/ThemeToggle';
@@ -21,7 +23,7 @@ import { useModuleBrand } from '@/lib/moduleBrand';
 import { useThemeSync } from '@/lib/theme';
 import { cn } from '@/lib/utils';
 
-type NavItem = { to: string; label: string; icon: React.ComponentType<{ className?: string }> };
+type NavItem = { to: string; label: string; icon: React.ComponentType<{ className?: string }>; needs?: Permission };
 
 const NAV: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -29,6 +31,8 @@ const NAV: NavItem[] = [
   { to: '/expenses', label: 'Expenses', icon: Wallet },
   { to: '/ledger', label: 'Ledger', icon: ArrowDownUp },
   { to: '/customers', label: 'Customers', icon: Users },
+  { to: '/approvals', label: 'Approvals', icon: CheckCheck },
+  { to: '/audit', label: 'Audit log', icon: ScrollText, needs: 'finance.audit' },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
 
@@ -95,7 +99,7 @@ function NoAccess({ username }: { username: string }) {
         <h1 className="text-xl font-bold">No access to Finance</h1>
         <p className="text-sm text-muted-foreground">
           You are signed in as <span className="font-semibold text-foreground">{username}</span>, but your account is not
-          allowed to use Finance. Ask an admin to add you to the finance-admin group.
+          allowed to use Finance. Ask an admin to give you a Finance role (bookkeeper, approver, read-only or admin) in HR.
         </p>
         <div className="flex justify-center gap-3 text-sm">
           <SignOutButton />
@@ -154,7 +158,7 @@ export function Layout() {
           <Wordmark />
         </div>
         <nav className="p-2 md:flex-1 overflow-y-auto">
-          <NavLinks items={NAV} />
+          <NavLinks items={NAV.filter((n) => !n.needs || can(me.data, n.needs))} />
         </nav>
         <div className="p-2 border-t border-border space-y-0.5">
           <ThemeToggle className="w-full" />

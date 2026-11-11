@@ -50,6 +50,38 @@ type RequestOpts = {
   headers?: Record<string, string>;
 };
 
+/** A fresh Idempotency-Key for one create or payment attempt. Reuse it only to retry that same attempt. */
+export function newIdempotencyKey(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+/** Downloads a binary response (an invoice PDF) and saves it under its Content-Disposition name. */
+export async function downloadFile(path: string, fallbackName: string): Promise<void> {
+  const url = new URL(`${apiBaseUrl()}${path}`, window.location.origin);
+  const auth = await authHeadersResolver();
+  const res = await fetch(url.toString(), { headers: { Accept: 'application/pdf', ...auth }, credentials: 'include' });
+  if (!res.ok) {
+    let body: ApiErrorBody = { error: { code: 'http_error', message: `Download failed (${res.status})` } };
+    try {
+      const parsed = (await res.json()) as Partial<ApiErrorBody>;
+      if (parsed?.error?.message) body = parsed as ApiErrorBody;
+    } catch {
+      // keep the generic message
+    }
+    throw new ApiError(res.status, body);
+  }
+  const name = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') ?? '')?.[1] ?? fallbackName;
+  const href = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(href);
+}
+
 export async function apiRequest<T>(path: string, opts: RequestOpts = {}): Promise<T> {
   const url = new URL(
     path.startsWith('http') ? path : `${apiBaseUrl()}${path}`,

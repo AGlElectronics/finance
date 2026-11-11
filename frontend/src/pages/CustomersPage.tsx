@@ -13,6 +13,7 @@ import {
   type CustomerInput,
 } from '@/api/customers';
 import { SearchInput } from '@/components/SearchInput';
+import { useCan } from '@/api/me';
 import { formatCents } from '@/lib/money';
 import { noAutofill } from '@/lib/noAutofill';
 
@@ -84,6 +85,7 @@ function CustomerForm({ initial, onDone, customerId }: { initial: Form; customer
 
 export function CustomersPage() {
   const qc = useQueryClient();
+  const canWrite = useCan('finance.write');
   const [showArchived, setShowArchived] = useState(false);
   const [search, setSearch] = useState('');
   const [editing, setEditing] = useState<Customer | 'new' | null>(null);
@@ -116,11 +118,16 @@ export function CustomersPage() {
           <h1 className="text-2xl font-bold">Customers</h1>
           <p className="text-sm text-muted-foreground">Who your invoices are addressed to.</p>
         </div>
-        <button type="button" onClick={() => setEditing('new')}
-          className="inline-flex items-center gap-1.5 rounded-pill bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground">
-          <Plus className="h-4 w-4" /> New customer
-        </button>
+        {canWrite && (
+          <button type="button" onClick={() => setEditing('new')}
+            className="inline-flex items-center gap-1.5 rounded-pill bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground">
+            <Plus className="h-4 w-4" /> New customer
+          </button>
+        )}
       </div>
+      <p className="text-xs text-muted-foreground">
+        Issued invoices keep the name, address and tax ID they were issued with; editing a customer changes only new invoices.
+      </p>
 
       {editing && (
         <CustomerForm
@@ -181,7 +188,7 @@ export function CustomersPage() {
                     {c.outstanding_cents > 0 ? formatCents(c.outstanding_cents) : '—'}
                   </td>
                   <td className="px-4 py-2.5">
-                    <div className="flex justify-end gap-1">
+                    <div className={`flex justify-end gap-1 ${canWrite ? '' : 'hidden'}`}>
                       <button type="button" title="Edit" onClick={() => setEditing(c)}
                         className="rounded-pill p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground">
                         <Pencil className="h-4 w-4" />

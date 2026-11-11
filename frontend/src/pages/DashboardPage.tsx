@@ -3,6 +3,7 @@ import { Link } from '@tanstack/react-router';
 import { Plus } from 'lucide-react';
 
 import { getDashboard, type MonthFlow } from '@/api/dashboard';
+import { useCan } from '@/api/me';
 import { InvoiceStatusBadge } from '@/components/InvoiceStatusBadge';
 import { formatCents } from '@/lib/money';
 
@@ -53,6 +54,7 @@ function CashFlowChart({ months }: { months: MonthFlow[] }) {
 
 export function DashboardPage() {
   const dash = useQuery({ queryKey: ['dashboard'], queryFn: getDashboard });
+  const canWrite = useCan('finance.write');
 
   if (dash.isPending) {
     return <div className="p-6 text-muted-foreground">Loading…</div>;
@@ -69,16 +71,23 @@ export function DashboardPage() {
           <h1 className="text-2xl font-bold">Dashboard</h1>
           <p className="text-sm text-muted-foreground">
             {d.open_count} open invoice{d.open_count === 1 ? '' : 's'} · {d.draft_count} draft{d.draft_count === 1 ? '' : 's'}
+            {d.pending_approvals > 0 && (
+              <> · <Link to="/approvals" className="font-medium text-primary hover:underline">
+                {d.pending_approvals} waiting for approval
+              </Link></>
+            )}
           </p>
         </div>
-        <Link to="/invoices/new"
-          className="inline-flex items-center gap-1.5 rounded-pill bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground">
-          <Plus className="h-4 w-4" /> New invoice
-        </Link>
+        {canWrite && (
+          <Link to="/invoices/new"
+            className="inline-flex items-center gap-1.5 rounded-pill bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground">
+            <Plus className="h-4 w-4" /> New invoice
+          </Link>
+        )}
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <StatCard label="Still owed" value={formatCents(d.outstanding_cents)} hint="Issued invoices minus payments" />
+        <StatCard label="Still owed" value={formatCents(d.outstanding_cents)} hint="Issued invoices minus credit notes and payments" />
         <StatCard label="Overdue" value={formatCents(d.overdue_cents)} tone={d.overdue_count > 0 ? 'destructive' : undefined}
           hint={`${d.overdue_count} invoice${d.overdue_count === 1 ? '' : 's'} past due`} />
         <StatCard label="Cash position" value={formatCents(d.net_total_cents)}

@@ -6,6 +6,7 @@ const LOOK: Record<InvoiceStatus, { label: string; cls: string }> = {
   issued: { label: 'Issued', cls: 'bg-info-soft text-info-foreground' },
   partial: { label: 'Partially paid', cls: 'bg-warning-soft text-warning-foreground' },
   paid: { label: 'Paid', cls: 'bg-success-soft text-success-foreground' },
+  credited: { label: 'Credited', cls: 'bg-muted text-muted-foreground' },
   void: { label: 'Void', cls: 'bg-muted text-muted-foreground line-through' },
 };
 

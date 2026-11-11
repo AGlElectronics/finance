@@ -5,6 +5,7 @@ import { ArrowDownLeft, ArrowUpRight } from 'lucide-react';
 
 import { expenseCategoryLabel } from '@/api/expenses';
 import { getLedger, type LedgerEntry } from '@/api/ledger';
+import { PAGE_SIZE, Pagination } from '@/components/Pagination';
 import { SearchInput } from '@/components/SearchInput';
 import { formatCents } from '@/lib/money';
 
@@ -33,7 +34,8 @@ function DirectionBadge({ direction }: { direction: LedgerEntry['direction'] }) 
 }
 
 export function LedgerPage() {
-  const ledger = useQuery({ queryKey: ['ledger'], queryFn: getLedger });
+  const [offset, setOffset] = useState(0);
+  const ledger = useQuery({ queryKey: ['ledger', offset], queryFn: () => getLedger({ limit: PAGE_SIZE, offset }) });
   const [search, setSearch] = useState('');
   const [direction, setDirection] = useState<'' | 'in' | 'out'>('');
 
@@ -57,7 +59,7 @@ export function LedgerPage() {
     <div className="p-6 space-y-4">
       <div>
         <h1 className="text-2xl font-bold">Ledger</h1>
-        <p className="text-sm text-muted-foreground">Every payment in and expense out, with the running cash position.</p>
+        <p className="text-sm text-muted-foreground">Every payment in and every expense and refund out, with the running cash position.</p>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-3">
@@ -102,11 +104,11 @@ export function LedgerPage() {
                   <td className="px-2 py-2.5"><DirectionBadge direction={e.direction} /></td>
                   <td className="px-2 py-2.5 font-medium">{e.counterparty}</td>
                   <td className="px-2 py-2.5 text-muted-foreground">
-                    {e.direction === 'in' && e.invoice_id ? (
+                    {e.invoice_id ? (
                       <Link to="/invoices/$id" params={{ id: e.invoice_id }} className="font-mono text-xs text-primary hover:underline">
-                        {e.detail || 'invoice'}
+                        {e.kind === 'refund' ? `refund · ${e.detail}` : e.detail || 'invoice'}
                       </Link>
-                    ) : e.direction === 'out' ? (
+                    ) : e.kind === 'expense' ? (
                       <span className="rounded-pill bg-muted px-2 py-0.5 text-xs">{expenseCategoryLabel(e.detail)}</span>
                     ) : (
                       e.detail || '—'
@@ -125,6 +127,7 @@ export function LedgerPage() {
           </table>
         </div>
       )}
+      <Pagination total={l.total} offset={offset} onChange={setOffset} />
     </div>
   );
 }

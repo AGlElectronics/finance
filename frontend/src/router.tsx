@@ -10,6 +10,8 @@ import {
 import { INVOICE_STATUSES, type InvoiceStatus } from '@/api/invoices';
 import { Layout } from '@/components/Layout';
 import { getUserManager, isOidcAuthMode } from '@/auth/oidc';
+import { ApprovalsPage } from '@/pages/ApprovalsPage';
+import { AuditPage } from '@/pages/AuditPage';
 import { CustomersPage } from '@/pages/CustomersPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { ExpensesPage } from '@/pages/ExpensesPage';
@@ -150,6 +152,18 @@ const settingsRoute = createRoute({
   component: SettingsPage,
 });
 
+const approvalsRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/approvals',
+  component: ApprovalsPage,
+});
+
+const auditRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/audit',
+  component: AuditPage,
+});
+
 const routeTree = rootRoute.addChildren([
   loginRoute,
   oidcCallbackRoute,
@@ -163,6 +177,8 @@ const routeTree = rootRoute.addChildren([
     invoiceEditRoute,
     expensesRoute,
     ledgerRoute,
+    approvalsRoute,
+    auditRoute,
     settingsRoute,
   ]),
 ]);

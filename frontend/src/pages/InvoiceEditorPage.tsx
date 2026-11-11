@@ -3,9 +3,10 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from '@tanstack/react-router';
 import { Plus, Trash2 } from 'lucide-react';
 
-import { ApiError } from '@/api/client';
+import { ApiError, newIdempotencyKey } from '@/api/client';
 import { listCustomers } from '@/api/customers';
 import { createInvoice, getInvoice, updateInvoice, type InvoiceInput } from '@/api/invoices';
+import { useSettings } from '@/api/settings';
 import { centsToInput, formatCents, parseEuros } from '@/lib/money';
 import { queryClient } from '@/lib/queryClient';
 
@@ -14,7 +15,7 @@ const inputCls = 'w-full rounded-md border border-input bg-background px-3 py-2 
 /** A line while editing: money and tax stay as text so typing is not fought. */
 type LineDraft = { description: string; quantity: string; unitPrice: string; taxPercent: string };
 
-const EMPTY_LINE: LineDraft = { description: '', quantity: '1', unitPrice: '', taxPercent: '20' };
+const emptyLine = (vatBp: number): LineDraft => ({ description: '', quantity: '1', unitPrice: '', taxPercent: String(vatBp / 100) });
 
 function lineCents(l: LineDraft): { subtotal: number; tax: number } | null {
   const qty = Number(l.quantity.replace(',', '.'));
@@ -58,11 +59,21 @@ export function InvoiceEditorPage() {
     enabled: Boolean(id),
   });
 
+  const settings = useSettings();
+  const vatBp = settings.data?.default_vat_rate_bp ?? 2000;
+  const currency = settings.data?.currency ?? 'EUR';
   const [customerId, setCustomerId] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [notes, setNotes] = useState('');
-  const [lines, setLines] = useState<LineDraft[]>([{ ...EMPTY_LINE }]);
+  const [lines, setLines] = useState<LineDraft[]>([emptyLine(vatBp)]);
   const [loaded, setLoaded] = useState(false);
+  // One key per new draft: a retry after a network error does not create it twice.
+  const [key] = useState(newIdempotencyKey);
+
+  useEffect(() => {
+    if (id || !settings.data) return;
+    setLines((ls) => (ls.length === 1 && !ls[0].description && !ls[0].unitPrice ? [emptyLine(settings.data.default_vat_rate_bp)] : ls));
+  }, [id, settings.data]);
 
   useEffect(() => {
     if (!id || !existing.data || loaded) return;
@@ -85,7 +96,7 @@ export function InvoiceEditorPage() {
     setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch } : l)));
 
   const save = useMutation({
-    mutationFn: (input: InvoiceInput) => (id ? updateInvoice(id, input) : createInvoice(input)),
+    mutationFn: (input: InvoiceInput) => (id ? updateInvoice(id, input) : createInvoice(input, key)),
     onSuccess: (inv) => {
       void queryClient.invalidateQueries({ queryKey: ['invoices'] });
       void queryClient.invalidateQueries({ queryKey: ['invoice', inv.id] });
@@ -164,7 +175,7 @@ export function InvoiceEditorPage() {
         <section className="space-y-3 rounded-lg border border-border bg-card p-4">
           <div className="flex items-center justify-between">
             <h2 className="font-semibold">Lines</h2>
-            <button type="button" onClick={() => setLines((ls) => [...ls, { ...EMPTY_LINE }])}
+            <button type="button" onClick={() => setLines((ls) => [...ls, emptyLine(vatBp)])}
               className="inline-flex items-center gap-1 rounded-pill border border-border px-3 py-1.5 text-sm">
               <Plus className="h-4 w-4" /> Add line
             </button>
@@ -172,7 +183,7 @@ export function InvoiceEditorPage() {
 
           <div className="space-y-2">
             <div className="hidden gap-2 text-xs font-medium text-muted-foreground sm:grid sm:grid-cols-[1fr_5rem_7rem_5rem_6rem_2rem]">
-              <span>Description</span><span>Qty</span><span>Unit price €</span><span>Tax %</span>
+              <span>Description</span><span>Qty</span><span>Unit price ({currency})</span><span>Tax %</span>
               <span className="text-right">Total</span><span />
             </div>
             {lines.map((l, i) => {
@@ -185,10 +196,10 @@ export function InvoiceEditorPage() {
                     value={l.quantity} onChange={(e) => setLine(i, { quantity: e.target.value })} />
                   <input className={inputCls} inputMode="decimal" placeholder="0,00"
                     value={l.unitPrice} onChange={(e) => setLine(i, { unitPrice: e.target.value })} />
-                  <input className={inputCls} inputMode="decimal" placeholder="20"
+                  <input className={inputCls} inputMode="decimal" placeholder={String(vatBp / 100)}
                     value={l.taxPercent} onChange={(e) => setLine(i, { taxPercent: e.target.value })} />
                   <span className="text-right text-sm tabular-nums text-muted-foreground">
-                    {c ? formatCents(c.subtotal + c.tax) : '—'}
+                    {c ? formatCents(c.subtotal + c.tax, currency) : '—'}
                   </span>
                   <button type="button" title="Remove line" disabled={lines.length === 1}
                     onClick={() => setLines((ls) => ls.filter((_, j) => j !== i))}
@@ -201,9 +212,9 @@ export function InvoiceEditorPage() {
           </div>
 
           <div className="ml-auto w-56 space-y-1 border-t border-border pt-3 text-sm">
-            <div className="flex justify-between"><span className="text-muted-foreground">Subtotal</span><span className="tabular-nums">{formatCents(totals.subtotal)}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">Tax</span><span className="tabular-nums">{formatCents(totals.tax)}</span></div>
-            <div className="flex justify-between font-semibold"><span>Total</span><span className="tabular-nums">{formatCents(totals.subtotal + totals.tax)}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Subtotal</span><span className="tabular-nums">{formatCents(totals.subtotal, currency)}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Tax</span><span className="tabular-nums">{formatCents(totals.tax, currency)}</span></div>
+            <div className="flex justify-between font-semibold"><span>Total</span><span className="tabular-nums">{formatCents(totals.subtotal + totals.tax, currency)}</span></div>
           </div>
         </section>
 
