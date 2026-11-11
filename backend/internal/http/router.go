@@ -201,6 +201,7 @@ func meHandler(cfg *config.Config) http.HandlerFunc {
 			"groups": []string{}, "roles": []string{}, "permissions": []access.Permission{}}
 		if a != nil {
 			out["username"], out["has_access"] = a.Username, a.HasAccess
+			out["issuer"], out["subject"] = a.Issuer, a.Subject
 			if a.Groups != nil {
 				out["groups"] = a.Groups
 			}
