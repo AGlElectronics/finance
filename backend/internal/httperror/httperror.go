@@ -25,6 +25,13 @@ const (
 	CodeConflict     Code = "conflict"
 	CodeInternal     Code = "internal"
 	CodeUpstream     Code = "upstream_failed"
+
+	// Finance-specific codes.
+	CodePeriodClosed        Code = "period_closed"            // 409
+	CodeIdempotencyRequired Code = "idempotency_key_required" // 400
+	CodeIdempotencyReused   Code = "idempotency_key_reused"   // 422
+	CodeStorageUnavailable  Code = "storage_unavailable"      // 503
+	CodeSameApprover        Code = "approver_is_requester"    // 403
 )
 
 // Error is the canonical service error type. Services return *Error or wrap a
@@ -140,18 +147,20 @@ func Render(w http.ResponseWriter, r *http.Request, err error) {
 
 func statusFor(code Code) int {
 	switch code {
-	case CodeBadRequest:
+	case CodeBadRequest, CodeIdempotencyRequired:
 		return http.StatusBadRequest
-	case CodeValidation:
+	case CodeValidation, CodeIdempotencyReused:
 		return http.StatusUnprocessableEntity
 	case CodeUnauthorized:
 		return http.StatusUnauthorized
-	case CodeForbidden:
+	case CodeForbidden, CodeSameApprover:
 		return http.StatusForbidden
 	case CodeNotFound:
 		return http.StatusNotFound
-	case CodeConflict:
+	case CodeConflict, CodePeriodClosed:
 		return http.StatusConflict
+	case CodeStorageUnavailable:
+		return http.StatusServiceUnavailable
 	case CodeUpstream:
 		return http.StatusBadGateway
 	default:

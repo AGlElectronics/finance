@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/AGlElectronics/finance/backend/internal/audit"
 	"github.com/AGlElectronics/finance/backend/internal/domain"
@@ -27,10 +26,16 @@ type Expense struct {
 	Reference   string    `json:"reference"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+	// Deleted expenses stay in the database (and the audit log) but leave
+	// the ledger and the dashboard.
+	Deleted       bool       `json:"deleted"`
+	DeletedAt     *time.Time `json:"deleted_at,omitempty"`
+	DeletedReason string     `json:"deleted_reason,omitempty"`
 }
 
 // ExpenseInput creates or updates an expense. On update, nil fields keep
-// their current value.
+// their current value; the amount and the date cannot change after the
+// expense is recorded (delete it and record it again).
 type ExpenseInput struct {
 	OccurredOn  *string `json:"occurred_on"`
 	Vendor      *string `json:"vendor"`
@@ -41,6 +46,25 @@ type ExpenseInput struct {
 	Reference   *string `json:"reference"`
 }
 
+// DeleteInput explains a deletion.
+type DeleteInput struct {
+	Reason string `json:"reason"`
+}
+
+// ExpenseFilter narrows ListExpenses.
+type ExpenseFilter struct {
+	Category       string
+	IncludeDeleted bool
+	Page
+}
+
+// ExpensePage is one page of expenses.
+type ExpensePage struct {
+	Expenses []Expense `json:"expenses"`
+	Total    int64     `json:"total"`
+	Page
+}
+
 func (in ExpenseInput) validate(creating bool) error {
 	fields := map[string]string{}
 	if in.Vendor != nil && strings.TrimSpace(*in.Vendor) == "" {
@@ -49,7 +73,7 @@ func (in ExpenseInput) validate(creating bool) error {
 	if creating && in.Vendor == nil {
 		fields["vendor"] = "required"
 	}
-	if in.AmountCents != nil && *in.AmountCents <= 0 {
+	if in.AmountCents != nil && (*in.AmountCents <= 0 || *in.AmountCents > domain.MaxAmountCents) {
 		fields["amount_cents"] = "must be positive"
 	}
 	if creating && in.AmountCents == nil {
@@ -62,8 +86,13 @@ func (in ExpenseInput) validate(creating bool) error {
 		fields["method"] = "unknown method"
 	}
 	if in.OccurredOn != nil {
-		if _, err := time.Parse("2006-01-02", *in.OccurredOn); err != nil {
+		if _, err := time.Parse(dateLayout, *in.OccurredOn); err != nil {
 			fields["occurred_on"] = "use YYYY-MM-DD"
+		}
+	}
+	for key, v := range map[string]*string{"vendor": in.Vendor, "description": in.Description, "reference": in.Reference} {
+		if v != nil && len(*v) > 2000 {
+			fields[key] = "too long"
 		}
 	}
 	if len(fields) > 0 {
@@ -72,123 +101,212 @@ func (in ExpenseInput) validate(creating bool) error {
 	return nil
 }
 
-// ExpenseService owns the expenses table.
-type ExpenseService struct {
-	pool  *pgxpool.Pool
-	audit *audit.Writer
-}
-
-func NewExpenseService(pool *pgxpool.Pool, audit *audit.Writer) *ExpenseService {
-	return &ExpenseService{pool: pool, audit: audit}
-}
-
 const expenseCols = `
 	e.id, to_char(e.occurred_on, 'YYYY-MM-DD'), e.vendor, e.category,
-	e.description, e.amount_cents, e.method, e.reference, e.created_at, e.updated_at`
+	e.description, e.amount_cents, e.method, e.reference, e.created_at, e.updated_at,
+	e.deleted_at, e.deleted_reason`
 
 func scanExpense(row pgx.Row) (Expense, error) {
 	var e Expense
 	err := row.Scan(&e.ID, &e.OccurredOn, &e.Vendor, &e.Category,
-		&e.Description, &e.AmountCents, &e.Method, &e.Reference, &e.CreatedAt, &e.UpdatedAt)
+		&e.Description, &e.AmountCents, &e.Method, &e.Reference, &e.CreatedAt, &e.UpdatedAt,
+		&e.DeletedAt, &e.DeletedReason)
+	e.Deleted = e.DeletedAt != nil
 	return e, err
 }
 
-// List returns expenses newest first, optionally only one category.
-func (s *ExpenseService) List(ctx context.Context, category string) ([]Expense, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT `+expenseCols+`
+// ListExpenses returns one page of expenses, newest first.
+func (s *Service) ListExpenses(ctx context.Context, f ExpenseFilter) (ExpensePage, error) {
+	f.Page = f.Page.Normalize()
+	out := ExpensePage{Expenses: []Expense{}, Page: f.Page}
+	const where = `
 		  FROM expenses e
-		 WHERE $1 = '' OR e.category = $1
-		 ORDER BY e.occurred_on DESC, e.created_at DESC`, category)
+		 WHERE ($1 = '' OR e.category = $1) AND ($2 OR e.deleted_at IS NULL)`
+	if err := s.pool.QueryRow(ctx, `SELECT count(*)`+where, f.Category, f.IncludeDeleted).Scan(&out.Total); err != nil {
+		return out, httperror.Internal(err)
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+expenseCols+where+`
+		 ORDER BY e.occurred_on DESC, e.created_at DESC, e.id DESC LIMIT $3 OFFSET $4`,
+		f.Category, f.IncludeDeleted, f.Limit, f.Offset)
 	if err != nil {
-		return nil, httperror.Internal(err)
+		return out, httperror.Internal(err)
 	}
 	defer rows.Close()
-	out := []Expense{}
 	for rows.Next() {
 		e, err := scanExpense(rows)
 		if err != nil {
-			return nil, httperror.Internal(err)
+			return out, httperror.Internal(err)
 		}
-		out = append(out, e)
+		out.Expenses = append(out.Expenses, e)
 	}
 	return out, rows.Err()
 }
 
-// Get returns one expense.
-func (s *ExpenseService) Get(ctx context.Context, id uuid.UUID) (Expense, error) {
-	e, err := scanExpense(s.pool.QueryRow(ctx, `
-		SELECT `+expenseCols+` FROM expenses e WHERE e.id = $1`, id))
+// GetExpense returns one expense, deleted or not.
+func (s *Service) GetExpense(ctx context.Context, id uuid.UUID) (Expense, error) {
+	e, err := getExpense(ctx, s.pool, id, false)
+	return e, renderDBErr(err)
+}
+
+func getExpense(ctx context.Context, q querier, id uuid.UUID, lock bool) (Expense, error) {
+	sql := `SELECT ` + expenseCols + ` FROM expenses e WHERE e.id = $1`
+	if lock {
+		sql += ` FOR UPDATE`
+	}
+	e, err := scanExpense(q.QueryRow(ctx, sql, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Expense{}, httperror.NotFound("expense")
 	}
-	if err != nil {
-		return Expense{}, httperror.Internal(err)
-	}
-	return e, nil
+	return e, err
 }
 
-// Create records a new expense.
-func (s *ExpenseService) Create(ctx context.Context, actorName string, in ExpenseInput) (Expense, error) {
+// CreateExpense records a new expense, or asks for approval first when the
+// amount is above the approval threshold.
+func (s *Service) CreateExpense(ctx context.Context, who audit.Actor, idem Idem, in ExpenseInput) (Result, error) {
 	if err := in.validate(true); err != nil {
-		return Expense{}, err
+		return Result{}, err
+	}
+	d := s.today()
+	if in.OccurredOn != nil {
+		d, _ = time.Parse(dateLayout, *in.OccurredOn)
+	}
+	if err := s.checkBookingDate("occurred_on", d); err != nil {
+		return Result{}, err
+	}
+	day := d.Format(dateLayout)
+	in.OccurredOn = &day
+	var res Result
+	err := s.tx(ctx, func(tx pgx.Tx) error {
+		if prev, err := claimIdem(ctx, tx, who, idem); err != nil || prev != nil {
+			if prev != nil {
+				res = *prev
+			}
+			return err
+		}
+		if _, err := s.execExpense(ctx, tx, who, in, true, nil); err != nil {
+			return err
+		}
+		var err error
+		if s.needsApproval(*in.AmountCents) {
+			res.Pending = true
+			if res.ID, err = s.requestApproval(ctx, tx, who, ActionExpense, nil, *in.AmountCents, in); err != nil {
+				return err
+			}
+		} else if res.ID, err = s.execExpense(ctx, tx, who, in, false, nil); err != nil {
+			return err
+		}
+		return finishIdem(ctx, tx, who, idem, res, "expense")
+	})
+	return res, err
+}
+
+// execExpense checks (dry) or inserts an expense. in.OccurredOn is set.
+func (s *Service) execExpense(ctx context.Context, tx pgx.Tx, who audit.Actor, in ExpenseInput, dry bool, approvalID *uuid.UUID) (uuid.UUID, error) {
+	d, _ := time.Parse(dateLayout, deref(in.OccurredOn))
+	if err := ensureOpen(ctx, tx, d); err != nil {
+		return uuid.Nil, err
+	}
+	if dry {
+		return uuid.Nil, nil
 	}
 	var id uuid.UUID
-	err := s.pool.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, `
 		INSERT INTO expenses (occurred_on, vendor, category, description, amount_cents, method, reference)
-		VALUES (COALESCE($1::date, current_date), $2, COALESCE($3, 'other'), $4, $5,
-		        COALESCE($6, 'bank_transfer'), $7)
+		VALUES ($1::date, $2, COALESCE($3, 'other'), $4, $5, COALESCE($6, 'bank_transfer'), $7)
 		RETURNING id`,
-		in.OccurredOn, strings.TrimSpace(deref(in.Vendor)), in.Category,
+		d, strings.TrimSpace(deref(in.Vendor)), in.Category,
 		strings.TrimSpace(deref(in.Description)), *in.AmountCents,
-		in.Method, strings.TrimSpace(deref(in.Reference))).Scan(&id)
+		in.Method, strings.TrimSpace(deref(in.Reference))).Scan(&id); err != nil {
+		return uuid.Nil, err
+	}
+	e, err := getExpense(ctx, tx, id, false)
 	if err != nil {
-		return Expense{}, httperror.Internal(err)
+		return uuid.Nil, err
 	}
-	if err := s.audit.Record(ctx, actorName, "expense.created", "expense", id,
-		map[string]string{"vendor": strings.TrimSpace(deref(in.Vendor))}); err != nil {
-		return Expense{}, err
-	}
-	return s.Get(ctx, id)
+	return id, s.audit.Record(ctx, tx, who, audit.Event{
+		Action: "expense.created", EntityType: "expense", EntityID: id, After: e,
+		Metadata: map[string]any{"approval_id": approvalID},
+	})
 }
 
-// Update patches the given fields; nil fields are left alone.
-func (s *ExpenseService) Update(ctx context.Context, actorName string, id uuid.UUID, in ExpenseInput) (Expense, error) {
+// UpdateExpense patches vendor, category, description, method and
+// reference. The amount and date are fixed once recorded, so a change can
+// never bypass approval or a closed month: delete and record again instead.
+func (s *Service) UpdateExpense(ctx context.Context, who audit.Actor, id uuid.UUID, in ExpenseInput) (Expense, error) {
 	if err := in.validate(false); err != nil {
 		return Expense{}, err
 	}
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE expenses SET
-			occurred_on  = COALESCE($2::date, occurred_on),
-			vendor       = COALESCE(btrim($3), vendor),
-			category     = COALESCE($4, category),
-			description  = COALESCE(btrim($5), description),
-			amount_cents = COALESCE($6, amount_cents),
-			method       = COALESCE($7, method),
-			reference    = COALESCE(btrim($8), reference),
-			updated_at   = now()
-		 WHERE id = $1`,
-		id, in.OccurredOn, in.Vendor, in.Category, in.Description, in.AmountCents, in.Method, in.Reference)
-	if err != nil {
-		return Expense{}, httperror.Internal(err)
-	}
-	if tag.RowsAffected() == 0 {
-		return Expense{}, httperror.NotFound("expense")
-	}
-	if err := s.audit.Record(ctx, actorName, "expense.updated", "expense", id, nil); err != nil {
-		return Expense{}, err
-	}
-	return s.Get(ctx, id)
+	var out Expense
+	err := s.tx(ctx, func(tx pgx.Tx) error {
+		before, err := getExpense(ctx, tx, id, true)
+		if err != nil {
+			return err
+		}
+		if before.Deleted {
+			return httperror.Conflict("deleted expenses cannot be changed")
+		}
+		fields := map[string]string{}
+		if in.AmountCents != nil && *in.AmountCents != before.AmountCents {
+			fields["amount_cents"] = "cannot change; delete the expense and record it again"
+		}
+		if in.OccurredOn != nil && *in.OccurredOn != before.OccurredOn {
+			fields["occurred_on"] = "cannot change; delete the expense and record it again"
+		}
+		if len(fields) > 0 {
+			return httperror.Validation("the amount and date of a recorded expense are fixed", fields)
+		}
+		d, _ := time.Parse(dateLayout, before.OccurredOn)
+		if err := ensureOpen(ctx, tx, d); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE expenses SET
+				vendor      = COALESCE(btrim($2), vendor),
+				category    = COALESCE($3, category),
+				description = COALESCE(btrim($4), description),
+				method      = COALESCE($5, method),
+				reference   = COALESCE(btrim($6), reference),
+				updated_at  = now()
+			 WHERE id = $1`,
+			id, in.Vendor, in.Category, in.Description, in.Method, in.Reference); err != nil {
+			return err
+		}
+		if out, err = getExpense(ctx, tx, id, false); err != nil {
+			return err
+		}
+		return s.audit.Record(ctx, tx, who, audit.Event{
+			Action: "expense.updated", EntityType: "expense", EntityID: id, Before: before, After: out,
+		})
+	})
+	return out, err
 }
 
-// Delete removes an expense.
-func (s *ExpenseService) Delete(ctx context.Context, actorName string, id uuid.UUID) error {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM expenses WHERE id = $1`, id)
-	if err != nil {
-		return httperror.Internal(err)
+// DeleteExpense soft-deletes an expense: it stays in the database with the
+// reason, and leaves the ledger and dashboard.
+func (s *Service) DeleteExpense(ctx context.Context, who audit.Actor, id uuid.UUID, in DeleteInput) error {
+	reason := strings.TrimSpace(in.Reason)
+	if reason == "" {
+		return httperror.Validation("say why the expense is deleted", map[string]string{"reason": "required"})
 	}
-	if tag.RowsAffected() == 0 {
-		return httperror.NotFound("expense")
-	}
-	return s.audit.Record(ctx, actorName, "expense.deleted", "expense", id, nil)
+	return s.tx(ctx, func(tx pgx.Tx) error {
+		before, err := getExpense(ctx, tx, id, true)
+		if err != nil {
+			return err
+		}
+		if before.Deleted {
+			return httperror.Conflict("expense is already deleted")
+		}
+		d, _ := time.Parse(dateLayout, before.OccurredOn)
+		if err := ensureOpen(ctx, tx, d); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE expenses SET deleted_at = now(), deleted_reason = $2, updated_at = now() WHERE id = $1`, id, reason); err != nil {
+			return err
+		}
+		return s.audit.Record(ctx, tx, who, audit.Event{
+			Action: "expense.deleted", EntityType: "expense", EntityID: id, Before: before,
+			Metadata: map[string]string{"reason": reason},
+		})
+	})
 }

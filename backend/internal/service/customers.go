@@ -8,13 +8,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/AGlElectronics/finance/backend/internal/audit"
 	"github.com/AGlElectronics/finance/backend/internal/httperror"
 )
 
-// Customer is who an invoice is addressed to.
+// Customer is who an invoice is addressed to. Changing a customer never
+// changes invoices already issued: they keep a frozen copy.
 type Customer struct {
 	ID             uuid.UUID `json:"id"`
 	Name           string    `json:"name"`
@@ -42,25 +42,13 @@ type CustomerInput struct {
 	Archived       *bool   `json:"archived"`
 }
 
-// CustomerService owns the customers table.
-type CustomerService struct {
-	pool  *pgxpool.Pool
-	audit *audit.Writer
-}
-
-func NewCustomerService(pool *pgxpool.Pool, audit *audit.Writer) *CustomerService {
-	return &CustomerService{pool: pool, audit: audit}
-}
-
 const customerCols = `
 	c.id, c.name, c.email, c.billing_address, c.tax_id, c.notes,
 	c.archived_at IS NOT NULL, c.created_at, c.updated_at,
 	(SELECT count(*) FROM invoices i WHERE i.customer_id = c.id),
-	COALESCE((SELECT sum(i.total_cents - COALESCE(p.paid, 0))
-	            FROM invoices i
-	            LEFT JOIN LATERAL (SELECT sum(amount_cents) AS paid
-	                                 FROM payments WHERE invoice_id = i.id) p ON true
-	           WHERE i.customer_id = c.id AND i.status = 'issued'), 0)`
+	COALESCE((SELECT sum(GREATEST(b.total_cents - b.credited - (b.paid - b.refunded), 0))
+	            FROM (` + invoiceBase + `) b
+	           WHERE b.customer_id = c.id AND b.status = 'issued'), 0)`
 
 func scanCustomer(row pgx.Row) (Customer, error) {
 	var c Customer
@@ -69,8 +57,8 @@ func scanCustomer(row pgx.Row) (Customer, error) {
 	return c, err
 }
 
-// List returns customers ordered by name. Archived ones only when asked.
-func (s *CustomerService) List(ctx context.Context, includeArchived bool) ([]Customer, error) {
+// ListCustomers returns customers ordered by name. Archived ones only when asked.
+func (s *Service) ListCustomers(ctx context.Context, includeArchived bool) ([]Customer, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+customerCols+`
 		  FROM customers c
@@ -91,94 +79,111 @@ func (s *CustomerService) List(ctx context.Context, includeArchived bool) ([]Cus
 	return out, rows.Err()
 }
 
-// Get returns one customer.
-func (s *CustomerService) Get(ctx context.Context, id uuid.UUID) (Customer, error) {
-	c, err := scanCustomer(s.pool.QueryRow(ctx, `
-		SELECT `+customerCols+` FROM customers c WHERE c.id = $1`, id))
+// GetCustomer returns one customer.
+func (s *Service) GetCustomer(ctx context.Context, id uuid.UUID) (Customer, error) {
+	c, err := getCustomer(ctx, s.pool, id)
+	return c, renderDBErr(err)
+}
+
+func getCustomer(ctx context.Context, q querier, id uuid.UUID) (Customer, error) {
+	c, err := scanCustomer(q.QueryRow(ctx, `SELECT `+customerCols+` FROM customers c WHERE c.id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Customer{}, httperror.NotFound("customer")
 	}
-	if err != nil {
-		return Customer{}, httperror.Internal(err)
-	}
-	return c, nil
+	return c, err
 }
 
-// Create inserts a customer; name is the only required field.
-func (s *CustomerService) Create(ctx context.Context, actorName string, in CustomerInput) (Customer, error) {
-	name := strings.TrimSpace(deref(in.Name))
-	if name == "" {
-		return Customer{}, httperror.Validation("customer needs a name", map[string]string{"name": "required"})
+func checkCustomer(in CustomerInput, creating bool) error {
+	fields := map[string]string{}
+	if (creating || in.Name != nil) && strings.TrimSpace(deref(in.Name)) == "" {
+		fields["name"] = "required"
 	}
-	var id uuid.UUID
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO customers (name, email, billing_address, tax_id, notes)
-		VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-		name, strings.TrimSpace(deref(in.Email)), strings.TrimSpace(deref(in.BillingAddress)),
-		strings.TrimSpace(deref(in.TaxID)), strings.TrimSpace(deref(in.Notes))).Scan(&id)
-	if err != nil {
-		return Customer{}, httperror.Internal(err)
+	for key, v := range map[string]*string{"name": in.Name, "email": in.Email, "billing_address": in.BillingAddress, "tax_id": in.TaxID, "notes": in.Notes} {
+		if v != nil && len(*v) > 2000 {
+			fields[key] = "too long"
+		}
 	}
-	if err := s.audit.Record(ctx, actorName, "customer.created", "customer", id, map[string]string{"name": name}); err != nil {
+	if len(fields) > 0 {
+		return httperror.Validation("customer is not valid", fields)
+	}
+	return nil
+}
+
+// CreateCustomer inserts a customer; name is the only required field.
+func (s *Service) CreateCustomer(ctx context.Context, who audit.Actor, in CustomerInput) (Customer, error) {
+	if err := checkCustomer(in, true); err != nil {
 		return Customer{}, err
 	}
-	return s.Get(ctx, id)
+	var out Customer
+	err := s.tx(ctx, func(tx pgx.Tx) error {
+		var id uuid.UUID
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO customers (name, email, billing_address, tax_id, notes)
+			VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+			strings.TrimSpace(deref(in.Name)), strings.TrimSpace(deref(in.Email)), strings.TrimSpace(deref(in.BillingAddress)),
+			strings.TrimSpace(deref(in.TaxID)), strings.TrimSpace(deref(in.Notes))).Scan(&id); err != nil {
+			return err
+		}
+		var err error
+		if out, err = getCustomer(ctx, tx, id); err != nil {
+			return err
+		}
+		return s.audit.Record(ctx, tx, who, audit.Event{Action: "customer.created", EntityType: "customer", EntityID: id, After: out})
+	})
+	return out, err
 }
 
-// Update patches the given fields; nil fields are left alone.
-func (s *CustomerService) Update(ctx context.Context, actorName string, id uuid.UUID, in CustomerInput) (Customer, error) {
-	if in.Name != nil && strings.TrimSpace(*in.Name) == "" {
-		return Customer{}, httperror.Validation("customer needs a name", map[string]string{"name": "required"})
-	}
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE customers SET
-			name            = COALESCE(btrim($2), name),
-			email           = COALESCE(btrim($3), email),
-			billing_address = COALESCE(btrim($4), billing_address),
-			tax_id          = COALESCE(btrim($5), tax_id),
-			notes           = COALESCE(btrim($6), notes),
-			archived_at     = CASE WHEN $7::boolean IS NULL THEN archived_at
-			                       WHEN $7 THEN COALESCE(archived_at, now())
-			                       ELSE NULL END,
-			updated_at      = now()
-		 WHERE id = $1`,
-		id, in.Name, in.Email, in.BillingAddress, in.TaxID, in.Notes, in.Archived)
-	if err != nil {
-		return Customer{}, httperror.Internal(err)
-	}
-	if tag.RowsAffected() == 0 {
-		return Customer{}, httperror.NotFound("customer")
-	}
-	if err := s.audit.Record(ctx, actorName, "customer.updated", "customer", id, nil); err != nil {
+// UpdateCustomer patches the given fields; nil fields are left alone.
+func (s *Service) UpdateCustomer(ctx context.Context, who audit.Actor, id uuid.UUID, in CustomerInput) (Customer, error) {
+	if err := checkCustomer(in, false); err != nil {
 		return Customer{}, err
 	}
-	return s.Get(ctx, id)
+	var out Customer
+	err := s.tx(ctx, func(tx pgx.Tx) error {
+		before, err := getCustomer(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE customers SET
+				name            = COALESCE(btrim($2), name),
+				email           = COALESCE(btrim($3), email),
+				billing_address = COALESCE(btrim($4), billing_address),
+				tax_id          = COALESCE(btrim($5), tax_id),
+				notes           = COALESCE(btrim($6), notes),
+				archived_at     = CASE WHEN $7::boolean IS NULL THEN archived_at
+				                       WHEN $7 THEN COALESCE(archived_at, now())
+				                       ELSE NULL END,
+				updated_at      = now()
+			 WHERE id = $1`,
+			id, in.Name, in.Email, in.BillingAddress, in.TaxID, in.Notes, in.Archived); err != nil {
+			return err
+		}
+		if out, err = getCustomer(ctx, tx, id); err != nil {
+			return err
+		}
+		return s.audit.Record(ctx, tx, who, audit.Event{Action: "customer.updated", EntityType: "customer", EntityID: id, Before: before, After: out})
+	})
+	return out, err
 }
 
-// Delete removes a customer that has no invoices; otherwise it conflicts
-// (archive the customer instead, PATCH {"archived": true}).
-func (s *CustomerService) Delete(ctx context.Context, actorName string, id uuid.UUID) error {
-	var invoices int64
-	if err := s.pool.QueryRow(ctx,
-		`SELECT count(*) FROM invoices WHERE customer_id = $1`, id).Scan(&invoices); err != nil {
-		return httperror.Internal(err)
-	}
-	if invoices > 0 {
-		return httperror.Conflict("customer has invoices; archive it instead")
-	}
-	tag, err := s.pool.Exec(ctx, `DELETE FROM customers WHERE id = $1`, id)
-	if err != nil {
-		return httperror.Internal(err)
-	}
-	if tag.RowsAffected() == 0 {
-		return httperror.NotFound("customer")
-	}
-	return s.audit.Record(ctx, actorName, "customer.deleted", "customer", id, nil)
-}
-
-func deref(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
+// DeleteCustomer removes a customer that has no invoices; otherwise it
+// conflicts (archive the customer instead, PATCH {"archived": true}).
+func (s *Service) DeleteCustomer(ctx context.Context, who audit.Actor, id uuid.UUID) error {
+	return s.tx(ctx, func(tx pgx.Tx) error {
+		before, err := getCustomer(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if before.InvoiceCount > 0 {
+			return httperror.Conflict("customer has invoices; archive it instead")
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM customers WHERE id = $1`, id); err != nil {
+			if isForeignKey(err) {
+				return httperror.Conflict("customer has invoices; archive it instead")
+			}
+			return err
+		}
+		return s.audit.Record(ctx, tx, who, audit.Event{Action: "customer.deleted", EntityType: "customer", EntityID: id, Before: before})
+	})
 }

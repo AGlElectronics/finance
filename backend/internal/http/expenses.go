@@ -7,41 +7,45 @@ import (
 	"github.com/AGlElectronics/finance/backend/internal/service"
 )
 
-type expenseHandler struct {
-	svc    *service.ExpenseService
-	ledger *service.LedgerService
-}
-
-func (h *expenseHandler) list(w http.ResponseWriter, r *http.Request) {
-	expenses, err := h.svc.List(r.Context(), r.URL.Query().Get("category"))
+func (h *handler) listExpenses(w http.ResponseWriter, r *http.Request) {
+	page, err := parsePage(r)
 	if err != nil {
 		httperror.Render(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"expenses": expenses})
+	q := r.URL.Query()
+	out, err := h.svc.ListExpenses(r.Context(), service.ExpenseFilter{
+		Category: q.Get("category"), IncludeDeleted: q.Get("include_deleted") == "true", Page: page,
+	})
+	if err != nil {
+		httperror.Render(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
-func (h *expenseHandler) create(w http.ResponseWriter, r *http.Request) {
+func (h *handler) createExpense(w http.ResponseWriter, r *http.Request) {
 	var in service.ExpenseInput
-	if err := decodeJSON(r, &in); err != nil {
-		httperror.Render(w, r, err)
-		return
-	}
-	e, err := h.svc.Create(r.Context(), actorFrom(r), in)
+	idem, err := decodeIdem(r, &in)
 	if err != nil {
 		httperror.Render(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, e)
+	res, err := h.svc.CreateExpense(r.Context(), who(r), idem, in)
+	if err != nil {
+		httperror.Render(w, r, err)
+		return
+	}
+	writeResult(w, r, h.svc, res, http.StatusCreated, func() (any, error) { return h.svc.GetExpense(r.Context(), res.ID) })
 }
 
-func (h *expenseHandler) get(w http.ResponseWriter, r *http.Request) {
+func (h *handler) getExpense(w http.ResponseWriter, r *http.Request) {
 	id, err := parseUUIDParam(r, "id")
 	if err != nil {
 		httperror.Render(w, r, err)
 		return
 	}
-	e, err := h.svc.Get(r.Context(), id)
+	e, err := h.svc.GetExpense(r.Context(), id)
 	if err != nil {
 		httperror.Render(w, r, err)
 		return
@@ -49,7 +53,7 @@ func (h *expenseHandler) get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, e)
 }
 
-func (h *expenseHandler) update(w http.ResponseWriter, r *http.Request) {
+func (h *handler) updateExpense(w http.ResponseWriter, r *http.Request) {
 	id, err := parseUUIDParam(r, "id")
 	if err != nil {
 		httperror.Render(w, r, err)
@@ -60,7 +64,7 @@ func (h *expenseHandler) update(w http.ResponseWriter, r *http.Request) {
 		httperror.Render(w, r, err)
 		return
 	}
-	e, err := h.svc.Update(r.Context(), actorFrom(r), id, in)
+	e, err := h.svc.UpdateExpense(r.Context(), who(r), id, in)
 	if err != nil {
 		httperror.Render(w, r, err)
 		return
@@ -68,21 +72,32 @@ func (h *expenseHandler) update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, e)
 }
 
-func (h *expenseHandler) remove(w http.ResponseWriter, r *http.Request) {
+// deleteExpense takes the reason from a JSON body or ?reason=.
+func (h *handler) deleteExpense(w http.ResponseWriter, r *http.Request) {
 	id, err := parseUUIDParam(r, "id")
 	if err != nil {
 		httperror.Render(w, r, err)
 		return
 	}
-	if err := h.svc.Delete(r.Context(), actorFrom(r), id); err != nil {
+	in := service.DeleteInput{Reason: r.URL.Query().Get("reason")}
+	if err := decodeOptional(r, &in); err != nil {
+		httperror.Render(w, r, err)
+		return
+	}
+	if err := h.svc.DeleteExpense(r.Context(), who(r), id, in); err != nil {
 		httperror.Render(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *expenseHandler) ledgerGet(w http.ResponseWriter, r *http.Request) {
-	l, err := h.ledger.Get(r.Context())
+func (h *handler) ledger(w http.ResponseWriter, r *http.Request) {
+	page, err := parsePage(r)
+	if err != nil {
+		httperror.Render(w, r, err)
+		return
+	}
+	l, err := h.svc.GetLedger(r.Context(), page)
 	if err != nil {
 		httperror.Render(w, r, err)
 		return

@@ -23,6 +23,7 @@ import (
 	"github.com/AGlElectronics/finance/backend/internal/config"
 	"github.com/AGlElectronics/finance/backend/internal/db"
 	"github.com/AGlElectronics/finance/backend/internal/denlink"
+	"github.com/AGlElectronics/finance/backend/internal/docstore"
 	httpx "github.com/AGlElectronics/finance/backend/internal/http"
 	"github.com/AGlElectronics/finance/backend/internal/tlscert"
 )
@@ -64,11 +65,19 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		logger.Info().Str("issuer", cfg.OIDCIssuerURL).Msg("oidc verifier ready")
 	}
 
+	var store docstore.Store
 	if cfg.S3Configured() {
-		logger.Info().
-			Str("endpoint", cfg.S3Endpoint).
-			Str("bucket", cfg.S3Bucket).
-			Msg("object storage configured (LOCAL DEV ONLY; MinIO must never be used in production)")
+		s3, err := docstore.NewS3(docstore.S3Config{
+			Endpoint: cfg.S3Endpoint, Bucket: cfg.S3Bucket, Region: cfg.S3Region,
+			AccessKeyID: cfg.S3AccessKeyID, SecretAccessKey: cfg.S3SecretAccessKey, PathStyle: cfg.S3UsePathStyle,
+		})
+		if err != nil {
+			return fmt.Errorf("s3: %w", err)
+		}
+		store = s3
+		logger.Info().Str("endpoint", cfg.S3Endpoint).Str("bucket", cfg.S3Bucket).Msg("invoice PDF storage configured")
+	} else {
+		logger.Warn().Msg("S3_* not set: invoices and credit notes cannot be issued until PDF storage is configured")
 	}
 
 	den := denlink.New(pool, denlink.Config{Slug: "finance", Version: Version, InternalURL: cfg.DenInternalURL, Mode: cfg.DenMode}, logger)
@@ -83,6 +92,7 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		Logger:       logger,
 		OIDCVerifier: oidcVerifier,
 		Den:          den,
+		Store:        store,
 	}, Version)
 
 	server := &nethttp.Server{

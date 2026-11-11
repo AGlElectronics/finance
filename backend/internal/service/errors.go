@@ -11,3 +11,11 @@ var (
 	ErrForbidden    = httperror.ErrForbidden
 	ErrUnauthorized = httperror.ErrUnauthorized
 )
+
+const (
+	CodePeriodClosed        = httperror.CodePeriodClosed
+	CodeIdempotencyRequired = httperror.CodeIdempotencyRequired
+	CodeIdempotencyReused   = httperror.CodeIdempotencyReused
+	CodeStorageUnavailable  = httperror.CodeStorageUnavailable
+	CodeSameApprover        = httperror.CodeSameApprover
+)

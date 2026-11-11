@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/hlog"
 
+	"github.com/AGlElectronics/finance/backend/internal/access"
 	"github.com/AGlElectronics/finance/backend/internal/actor"
 	"github.com/AGlElectronics/finance/backend/internal/audit"
 	"github.com/AGlElectronics/finance/backend/internal/auth"
@@ -20,6 +21,7 @@ import (
 	"github.com/AGlElectronics/finance/backend/internal/clientip"
 	"github.com/AGlElectronics/finance/backend/internal/config"
 	"github.com/AGlElectronics/finance/backend/internal/denlink"
+	"github.com/AGlElectronics/finance/backend/internal/docstore"
 	"github.com/AGlElectronics/finance/backend/internal/service"
 )
 
@@ -31,6 +33,10 @@ type Deps struct {
 	OIDCVerifier *auth.OIDCVerifier
 	// Den is the pairing with Den; nil means a fresh standalone client.
 	Den *denlink.Client
+	// Store keeps issued PDFs; nil means S3 is not configured.
+	Store docstore.Store
+	// Clock replaces the time source (tests only).
+	Clock func() time.Time
 }
 
 // NewRouter wires the chi router with middleware, CORS and routes.
@@ -57,8 +63,8 @@ func NewRouter(deps Deps, version string) http.Handler {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   deps.Config.CORSAllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Content-Type", "Authorization", "X-Dev-User", "X-Request-ID"},
-		ExposedHeaders:   []string{"X-Request-ID"},
+		AllowedHeaders:   []string{"Accept", "Content-Type", "Authorization", "X-Dev-User", "X-Request-ID", "Idempotency-Key"},
+		ExposedHeaders:   []string{"X-Request-ID", "Idempotent-Replayed", "Content-Disposition"},
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
@@ -68,7 +74,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 	r.Get("/readyz", health.readyz)
 
 	r.Get("/api/role-catalog", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, catalog.Self())
+		writeJSON(w, http.StatusOK, catalog.Self(deps.Config.RoleGroups))
 	})
 
 	den := deps.Den
@@ -79,16 +85,26 @@ func NewRouter(deps Deps, version string) http.Handler {
 	r.Get("/api/brand/{role}", den.AssetHandler)
 	r.Get("/api/den/state", den.StateHandler)
 
+	cfg := deps.Config
 	auditWriter := audit.NewWriter(deps.Pool, deps.Logger)
-	customerSvc := service.NewCustomerService(deps.Pool, auditWriter)
-	invoiceSvc := service.NewInvoiceService(deps.Pool, auditWriter)
-	dashSvc := service.NewDashboardService(deps.Pool, invoiceSvc)
-	expenseSvc := service.NewExpenseService(deps.Pool, auditWriter)
-	ledgerSvc := service.NewLedgerService(deps.Pool)
-
-	customers := &customerHandler{svc: customerSvc}
-	invoices := &invoiceHandler{svc: invoiceSvc, dash: dashSvc}
-	expenses := &expenseHandler{svc: expenseSvc, ledger: ledgerSvc}
+	svc := service.New(deps.Pool, auditWriter, service.Options{
+		Currency:               cfg.Currency,
+		DefaultVATRateBp:       cfg.DefaultVATRateBp,
+		InvoicePrefix:          cfg.InvoicePrefix,
+		CreditNotePrefix:       cfg.CreditNotePrefix,
+		ApprovalThresholdCents: cfg.ApprovalThresholdCents,
+		MaxBackdateDays:        cfg.MaxBackdateDays,
+		Store:                  deps.Store,
+		Den:                    den,
+	})
+	if deps.Clock != nil {
+		svc.SetClock(deps.Clock)
+	}
+	h := &handler{svc: svc}
+	read := auth.Require(access.Read)
+	write := auth.Require(access.Write)
+	approve := auth.Require(access.Approve)
+	admin := auth.Require(access.Admin)
 
 	r.Route("/api", func(api chi.Router) {
 		api.Use(den.RequirePaired)
@@ -108,42 +124,69 @@ func NewRouter(deps Deps, version string) http.Handler {
 		api.Group(func(api chi.Router) {
 			api.Use(auth.RequireAccess)
 
-			api.Get("/dashboard", invoices.dashboard)
+			api.With(read).Get("/dashboard", h.dashboard)
 
 			api.Route("/customers", func(cr chi.Router) {
-				cr.Get("/", customers.list)
-				cr.Post("/", customers.create)
-				cr.Get("/{id}", customers.get)
-				cr.Patch("/{id}", customers.update)
-				cr.Delete("/{id}", customers.remove)
+				cr.With(read).Get("/", h.listCustomers)
+				cr.With(write).Post("/", h.createCustomer)
+				cr.With(read).Get("/{id}", h.getCustomer)
+				cr.With(write).Patch("/{id}", h.updateCustomer)
+				cr.With(write).Delete("/{id}", h.deleteCustomer)
 			})
 
 			api.Route("/invoices", func(ir chi.Router) {
-				ir.Get("/", invoices.list)
-				ir.Post("/", invoices.create)
-				ir.Get("/{id}", invoices.get)
-				ir.Patch("/{id}", invoices.update)
-				ir.Delete("/{id}", invoices.remove)
-				ir.Post("/{id}/issue", invoices.issue)
-				ir.Post("/{id}/void", invoices.void)
-				ir.Post("/{id}/payments", invoices.addPayment)
+				ir.With(read).Get("/", h.listInvoices)
+				ir.With(write).Post("/", h.createInvoice)
+				ir.With(read).Get("/{id}", h.getInvoice)
+				ir.With(read).Get("/{id}/pdf", h.invoicePDF)
+				ir.With(write).Patch("/{id}", h.updateInvoice)
+				ir.With(write).Delete("/{id}", h.deleteInvoice)
+				ir.With(write).Post("/{id}/issue", h.issueInvoice)
+				ir.With(write).Post("/{id}/void", h.voidInvoice)
+				ir.With(write).Post("/{id}/payments", h.addPayment)
+				ir.With(write).Post("/{id}/credit-notes", h.createCreditNote)
+			})
+
+			api.Route("/credit-notes", func(cr chi.Router) {
+				cr.With(read).Get("/{id}", h.getCreditNote)
+				cr.With(read).Get("/{id}/pdf", h.creditNotePDF)
+				cr.With(write).Post("/{id}/refunds", h.createRefund)
 			})
 
 			api.Route("/expenses", func(er chi.Router) {
-				er.Get("/", expenses.list)
-				er.Post("/", expenses.create)
-				er.Get("/{id}", expenses.get)
-				er.Patch("/{id}", expenses.update)
-				er.Delete("/{id}", expenses.remove)
+				er.With(read).Get("/", h.listExpenses)
+				er.With(write).Post("/", h.createExpense)
+				er.With(read).Get("/{id}", h.getExpense)
+				er.With(write).Patch("/{id}", h.updateExpense)
+				er.With(write).Delete("/{id}", h.deleteExpense)
 			})
 
-			api.Get("/ledger", expenses.ledgerGet)
+			api.With(read).Get("/ledger", h.ledger)
+
+			api.Route("/approvals", func(ar chi.Router) {
+				ar.With(read).Get("/", h.listApprovals)
+				ar.With(read).Get("/{id}", h.getApproval)
+				ar.With(approve).Post("/{id}/approve", h.approve)
+				ar.Post("/{id}/reject", h.reject)
+			})
+
+			api.Route("/periods", func(pr chi.Router) {
+				pr.With(read).Get("/", h.listPeriods)
+				pr.With(approve).Post("/{month}/close", h.closePeriod)
+				pr.With(admin).Post("/{month}/reopen", h.reopenPeriod)
+			})
+
+			api.With(read).Get("/settings", h.getSettings)
+			api.With(admin).Put("/settings", h.updateSettings)
+
+			api.With(auth.Require(access.Audit)).Get("/audit", h.auditLog)
 
 			api.Route("/den", func(dr chi.Router) {
+				dr.Use(admin)
 				dr.Get("/", den.StatusHandler)
-				dr.Post("/pair", den.PairHandler)
-				dr.Post("/sync", den.SyncHandler)
-				dr.Delete("/pair", den.UnpairHandler)
+				dr.Post("/pair", audited(auditWriter, "den.paired", den.PairHandler))
+				dr.Post("/sync", audited(auditWriter, "den.synced", den.SyncHandler))
+				dr.Delete("/pair", audited(auditWriter, "den.unpaired", den.UnpairHandler))
 			})
 		})
 	})
@@ -154,12 +197,15 @@ func NewRouter(deps Deps, version string) http.Handler {
 func meHandler(cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		a, _ := actor.FromContext(r.Context())
-		out := map[string]any{"username": "", "auth_mode": cfg.AuthMode, "has_access": false, "groups": []string{}}
+		out := map[string]any{"username": "", "auth_mode": cfg.AuthMode, "has_access": false,
+			"groups": []string{}, "roles": []string{}, "permissions": []access.Permission{}}
 		if a != nil {
 			out["username"], out["has_access"] = a.Username, a.HasAccess
 			if a.Groups != nil {
 				out["groups"] = a.Groups
 			}
+			out["roles"] = a.Roles
+			out["permissions"] = access.Permissions(a.Roles)
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(out)
