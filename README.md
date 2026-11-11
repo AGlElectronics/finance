@@ -6,20 +6,24 @@
 > Con Services is under active development. Expect breaking changes, missing
 > features and bugs. Do not use it for real events or real data yet.
 
-Finance module for the Con Services stack — a proof of concept for
-customers, outgoing invoices, payments, expenses, a running ledger and a
-cash-versus-owed dashboard.
+Finance module for the Con Services stack: customers, outgoing invoices
+with server-side PDFs, credit notes and refunds, payments, expenses, a
+running ledger, four-eyes approvals, closed months and an audit log.
 No bank connection yet; payments are recorded by hand (see
 [docs/domain-model.md](docs/domain-model.md)).
+
+**Documentation:** [Finance on the Con Services site](https://aglelectronics.github.io/con-services/modules/finance/)
+([setup](https://aglelectronics.github.io/con-services/modules/finance/setup/),
+[configuration and every environment variable](https://aglelectronics.github.io/con-services/modules/finance/configuration/),
+[API reference](https://aglelectronics.github.io/con-services/modules/finance/api/),
+[bookkeeping guide](https://aglelectronics.github.io/con-services/modules/finance/bookkeeping/)).
 
 - **Backend:** Go 1.27, chi, pgx (hand-written queries; no sqlc).
 - **Frontend:** React 19 + Rsbuild + TanStack Router/Query + Tailwind.
 - **Database:** PostgreSQL 16, migrated via Goose (`cmd/migrate` one-shot).
-- **Object storage:** Finance stores **no files** in this phase, so no S3 server is
-  intentionally wired into the standalone Compose stack. The `S3_*` env
-  schema is still read by `config.Load` so the first file feature (invoice
-  PDFs) can land without config churn. The suite's S3 server (SeaweedFS) is **local-dev only** and
-  must never ship to production.
+- **Object storage:** issued invoice and credit note PDFs are stored in
+  S3 (`S3_*`). The standalone Compose stack starts a SeaweedFS for that;
+  it is **local-dev only** and must never ship to production.
 
 ## Reserved ports
 
@@ -41,13 +45,15 @@ and learn (8120/3005/5437) on the same dev machine.
 Same as the other modules:
 
 - `AUTH_MODE=dev` (standalone default): the `X-Dev-User` header (default
-  `dev-finance-admin`) stamps the actor; no gate.
+  `dev-finance-admin`) stamps the actor and `X-Dev-Groups` (default
+  `DEV_DEFAULT_GROUPS=finance_admin`) its groups.
 - `AUTH_MODE=oidc` (suite): Bearer ID token from the shared Keycloak realm
-  `conservices`, client `finance-spa`. Access requires membership of a group
-  in `FINANCE_ACCESS_GROUPS` (default `finance-admin`).
+  `conservices`, client `finance-spa`.
 
-Finance serves the public `GET /api/role-catalog` contract, so HR's access
-picker can grant the `finance-admin` role during onboarding.
+Groups map to four roles, checked per route: `finance_bookkeeper`,
+`finance_approver`, `finance_read-only` and `finance_admin`
+(`FINANCE_*_GROUPS`). Finance serves the public `GET /api/role-catalog`
+contract, so HR's access picker can grant them during onboarding.
 
 ## First-time boot (standalone)
 
@@ -128,6 +134,10 @@ DATABASE_URL='postgres://finance:finance@localhost:5438/finance?sslmode=disable'
 HTTP_ADDR=:8130 \
 DATABASE_URL='postgres://finance:finance@localhost:5438/finance?sslmode=disable' \
   go run ./cmd/server       # pick ANY free host port; container default is :8080
+
+# Backend tests (the database tests need a dev PostgreSQL; DEV ONLY credentials)
+FINANCE_TEST_DATABASE_URL='postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable' \
+  go test ./...
 
 # Frontend
 cd finance/frontend

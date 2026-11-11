@@ -8,10 +8,9 @@
 # it with service_completed_successfully so cmd/server never runs
 # migrations itself.
 #
-# Object storage: Finance stores no files yet, so an S3 server is
-# intentionally NOT wired in. The S3_* environment schema is kept in
-# config.Load() for forward compatibility (invoice PDFs are the obvious
-# first file feature).
+# Object storage: issued invoice and credit note PDFs go to S3. The `s3`
+# service below is a LOCAL DEV ONLY SeaweedFS (not published on the host);
+# production uses a managed S3 service.
 #
 # Reserved HOST ports (Finance module):
 #   backend   : 8130  (container :8080)
@@ -39,6 +38,26 @@ services:
       timeout: 5s
       retries: 10
 
+  # LOCAL DEV ONLY S3 for invoice PDFs. DEV key finance / financedev; the
+  # bucket finance-data-dev is created on start.
+  s3:
+    image: chrislusf/seaweedfs:4.52
+    container_name: finance-s3
+    restart: unless-stopped
+    command: ["mini", "-dir=/data", "-s3.port=9000", "-bucket=finance-data-dev", "-master.telemetry=false",
+              "-admin.ui=false", "-webdav=false", "-s3.port.iceberg=0", "-s3.port.lance=0"]
+    environment:
+      AWS_ACCESS_KEY_ID: finance
+      AWS_SECRET_ACCESS_KEY: financedev
+    volumes:
+      - finance-s3-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9000/healthz && wget -q --spider http://127.0.0.1:8888/buckets/finance-data-dev/"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
   # One-shot migrator. Exits zero on success; the backend waits for that.
   migrate:
     build:
@@ -64,6 +83,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      s3:
+        condition: service_healthy
     environment:
       APP_ENV: development
       # Browser-facing base URL uses the HOST port so links in logs /
@@ -72,16 +93,16 @@ services:
       # Container binds :8080 (ecosystem convention). Compose maps 8130 -> 8080.
       HTTP_ADDR: ":8080"
       DATABASE_URL: postgres://finance:finance@postgres:5432/finance?sslmode=disable
-      # S3 is OPTIONAL in this phase: Finance stores no files yet. If any
-      # S3_* var is set, config.Load requires the full quartet (endpoint /
-      # bucket / access key / secret). Leaving them unset keeps it minimal.
-      S3_ENDPOINT: ${S3_ENDPOINT:-}
-      S3_BUCKET: ${S3_BUCKET:-}
-      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
-      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
-      S3_REGION: ${S3_REGION:-us-east-1}
-      S3_USE_PATH_STYLE: "${S3_USE_PATH_STYLE:-true}"
+      # PDF storage. DEV ONLY keys of the s3 service above.
+      S3_ENDPOINT: http://s3:9000
+      S3_BUCKET: finance-data-dev
+      S3_ACCESS_KEY_ID: finance
+      S3_SECRET_ACCESS_KEY: financedev
+      S3_REGION: us-east-1
+      S3_USE_PATH_STYLE: "true"
       DEV_DEFAULT_USER: dev-finance-admin
+      DEV_DEFAULT_GROUPS: finance_admin
+      FINANCE_APPROVAL_THRESHOLD_CENTS: ${FINANCE_APPROVAL_THRESHOLD_CENTS:-0}
       # Frontend talks to backend via the nginx reverse proxy on the SAME
       # origin, so CORS only matters for `npm run dev` on the host.
       CORS_ALLOWED_ORIGINS: http://localhost:3006
@@ -108,3 +129,4 @@ services:
 
 volumes:
   finance-postgres-data:
+  finance-s3-data:
