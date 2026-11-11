@@ -139,8 +139,53 @@ counts rebuilds of the same version. Rebuilds get no entry here.
 - CI on every pull request (tests, lint, Trivy scans) and signed images with
   an SBOM published to GHCR on version tags (linux/amd64; linux/arm64
   optional).
+- Finance uses the shared Con Services code (`groupmatch`, `denlink`,
+  `authbase`, copied from `con-services` `shared/go` with
+  `scripts/sync-shared`). See
+  [Shared code](https://aglelectronics.github.io/con-services/concepts/shared-code/).
+- When Den rejects Finance's credential (the module was removed in Den, or
+  the credential revoked), Finance marks the link **revoked** and keeps it
+  so across restarts. `GET /api/den/state` and `GET /api/den/` report
+  `"revoked": true`, `POST /api/den/sync` answers
+  `409 den_credential_revoked`, and admins see "Den rejected this module's
+  credential" with a form to pair again. Finance never pairs again by
+  itself; pairing again clears the state. The migration
+  `20261111000002_den_link_revoked` adds the column.
+- Group matching settings: `OIDC_GROUPS_CLAIM` (default `groups`),
+  `OIDC_GROUP_MATCH` (`full` or `last`) and `OIDC_GROUP_PREFIX` (a parent
+  group such as `/con2026` removed before matching).
+- The API is rate limited per signed-in person (per address when signed
+  out): `API_RATE_LIMIT` (default `300/m`) and `API_RATE_BURST` (default
+  `60`). Over the limit it answers `429 rate_limited` with `Retry-After`.
+- Pairing URLs may only point at Den's host: `DEN_INTERNAL_URL` (set on
+  Kubernetes) or the hosts in `DEN_ALLOWED_HOSTS`, over `https://` outside
+  development.
 
 ### Changed
+
+- **BREAKING:** the backend accepts only **access tokens** whose audience
+  (`aud`) contains `OIDC_AUDIENCE`, now `finance-api` by default (was the
+  client id `finance-spa`); ID tokens are refused. The web app sends the
+  access token. Before upgrading, add the audience mapper `finance-api` to
+  the `finance-spa` client in Keycloak (new realms from `con-services`
+  have it), and set `OIDC_AUDIENCE=finance-api` or remove the setting. See
+  [Audiences per API](https://aglelectronics.github.io/con-services/concepts/authentication/#audiences-per-api).
+- **BREAKING:** groups come only from the claim named by
+  `OIDC_GROUPS_CLAIM`; Keycloak `roles` are no longer merged in. Give
+  people their Finance roles through groups.
+- **BREAKING:** `AUTH_MODE` now defaults to `oidc` and `APP_ENV` to
+  `production`, and `AUTH_MODE=dev` is refused unless
+  `APP_ENV=development`. A development setup that relied on the old
+  defaults sets both explicitly (`.env.example` and the Compose files do).
+- **BREAKING:** `GET /api/role-catalog` needs `HR_SERVICE_TOKEN` as a
+  Bearer token or a staff sign-in, and follows the role catalog contract
+  1.0 (`revision` with `ETag`, `group_display`, `dynamic`, and
+  `privileged: true` for `finance_admin` and `finance_approver`). Give HR
+  the same `HR_SERVICE_TOKEN`.
+- The web app keeps sign-in tokens in memory only, no longer in
+  `localStorage`. After a reload it signs in again silently through the
+  Keycloak session; a sign-out or another person signing in in another
+  tab still reaches every tab through the session monitor.
 
 - `FINANCE_ACCESS_GROUPS` and the single `finance-admin` role are replaced
   by the four roles above. A development stack that used the
@@ -182,3 +227,25 @@ counts rebuilds of the same version. Rebuilds get no entry here.
   without `authMode` means OIDC. `VITE_DEV_USER` only works on the dev
   server; production builds in dev sign-in mode always sign in as
   `dev-finance-admin`.
+- **BREAKING:** the stored Den credential is encrypted (AES-256-GCM) with
+  `DEN_LINK_ENCRYPTION_KEY` (32 random bytes, base64; one key per
+  installation). Outside `APP_ENV=development` the backend refuses to start
+  without it. Add it to `finance-secrets` before upgrading; an existing
+  plaintext credential is encrypted on its first read, so no re-pairing is
+  needed. Rotate with `DEN_LINK_ENCRYPTION_KEY_PREVIOUS`. See
+  [Secrets](https://aglelectronics.github.io/con-services/operations/secrets/#den-link-encryption-key).
+- Request bodies are limited to 1 MiB; a larger one is refused with
+  `413 request_too_large`.
+- API responses carry `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY` and
+  `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`.
+  Outside dev sign-in the backend drops `X-Dev-User` and `X-Dev-Groups`
+  from every request, and CORS allows them only in dev sign-in.
+- The web app's nginx sends a Content Security Policy and the other browser
+  security headers from `con-services` `shared/nginx` (not on `/api/`). Set
+  `KEYCLOAK_ORIGIN` on the web app container to the sign-in server
+  (for example `https://auth.con.example.org`), or the browser blocks
+  sign-in; `DEN_ORIGIN`, `S3_ORIGIN` and `EXTRA_CONNECT_SRC` are optional.
+  The inline scripts of `index.html` and `silent-callback.html` moved into
+  `theme-init.js` and `silent-callback.js`. See
+  [Nginx security headers](https://aglelectronics.github.io/con-services/concepts/shared-code/#nginx-security-headers).

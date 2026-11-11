@@ -86,7 +86,15 @@ services:
       s3:
         condition: service_healthy
     environment:
+      # Both explicit: the defaults are APP_ENV=production and AUTH_MODE=oidc,
+      # and AUTH_MODE=dev (X-Dev-User headers, matching the web app's
+      # frontend-config/compose.json) is refused outside development.
       APP_ENV: development
+      AUTH_MODE: dev
+      # DEV ONLY (public value): encrypts the stored Den credential. Production:
+      # a random key per installation from a secret manager, see
+      # https://aglelectronics.github.io/con-services/operations/secrets/#den-link-encryption-key
+      DEN_LINK_ENCRYPTION_KEY: ZGV2LW9ubHktZmluYW5jZS1kZW4tbGluay1rZXktMDA=
       # Browser-facing base URL uses the HOST port so links in logs /
       # dev tooling point at something humans can click.
       APP_BASE_URL: http://localhost:8130
