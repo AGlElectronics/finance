@@ -77,6 +77,7 @@ func TestLoadRejectsBadValues(t *testing.T) {
 		"OIDC_GROUP_MATCH":                 "middle",
 		"API_RATE_LIMIT":                   "lots",
 		"DEN_LINK_ENCRYPTION_KEY":          "too-short",
+		"TRUSTED_PROXY_CIDRS":              "10.0.0.0/8,example.com",
 	}
 	for key, value := range cases {
 		t.Run(key, func(t *testing.T) {
@@ -87,6 +88,25 @@ func TestLoadRejectsBadValues(t *testing.T) {
 				t.Fatalf("%s=%q: err = %v", key, value, err)
 			}
 		})
+	}
+}
+
+func TestTrustedProxiesFromEnv(t *testing.T) {
+	for value, n := range map[string]int{
+		"":                              6, // the private and loopback ranges
+		"none":                          0,
+		"203.0.113.0/24, 2001:db8::/32": 2,
+		"203.0.113.9":                   1,
+	} {
+		devEnv(t)
+		t.Setenv("TRUSTED_PROXY_CIDRS", value)
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("%q: %v", value, err)
+		}
+		if len(cfg.Auth.TrustedProxies) != n {
+			t.Fatalf("%q: trusted proxies %v, want %d", value, cfg.Auth.TrustedProxies, n)
+		}
 	}
 }
 

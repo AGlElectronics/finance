@@ -217,9 +217,20 @@ func TestHardening(t *testing.T) {
 	if got := preflight(config.ForTest()); !strings.Contains(got, "X-Dev-User") {
 		t.Errorf("dev mode should allow X-Dev-User: %q", got)
 	}
+	// The web app reads the request ID, idempotent replays and PDF names.
+	cors := oidcConfig()
+	cors.CORSAllowedOrigins = []string{"http://localhost:3006"}
+	req := httptest.NewRequest("GET", "/api/den/state", nil)
+	req.Header.Set("Origin", "http://localhost:3006")
+	rec = httptest.NewRecorder()
+	noDBRouter(cors).ServeHTTP(rec, req)
+	if got := rec.Header().Get("Access-Control-Expose-Headers"); got != "X-Request-ID, Idempotent-Replayed, Content-Disposition" ||
+		rec.Header().Get("Access-Control-Allow-Origin") != "http://localhost:3006" || rec.Header().Get("X-Request-ID") == "" {
+		t.Errorf("CORS answer headers = %v", rec.Header())
+	}
 
 	// Dev headers do not sign anyone in outside dev mode.
-	req := httptest.NewRequest("GET", "/api/me", nil)
+	req = httptest.NewRequest("GET", "/api/me", nil)
 	req.Header.Set("X-Dev-User", "mallory")
 	rec = httptest.NewRecorder()
 	noDBRouter(oidcConfig()).ServeHTTP(rec, req)

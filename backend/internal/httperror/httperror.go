@@ -11,13 +11,14 @@ import (
 	"net/http"
 
 	"github.com/rs/zerolog/log"
+
+	"github.com/AGlElectronics/finance/backend/internal/authbase"
 )
 
 // Code is a stable string code returned to API clients.
 type Code string
 
 const (
-	CodeBadRequest   Code = "bad_request"
 	CodeValidation   Code = "validation_failed"
 	CodeUnauthorized Code = "unauthorized"
 	CodeForbidden    Code = "forbidden"
@@ -33,9 +34,12 @@ const (
 	CodeStorageUnavailable  Code = "storage_unavailable"      // 503
 	CodeSameApprover        Code = "approver_is_requester"    // 403
 
-	// Request body codes (authbase.DecodeJSON).
-	CodeTooLarge         Code = "request_too_large"      // 413
-	CodeUnsupportedMedia Code = "unsupported_media_type" // 415
+	// The shared codes (authbase), returned unchanged: the body decoder and
+	// the rate limiter write them, and the web app may switch on them.
+	CodeBadRequest       Code = authbase.CodeBadRequest           // 400
+	CodeTooLarge         Code = authbase.CodeRequestTooLarge      // 413
+	CodeUnsupportedMedia Code = authbase.CodeUnsupportedMediaType // 415
+	CodeRateLimited      Code = authbase.CodeRateLimited          // 429
 )
 
 // Error is the canonical service error type. Services return *Error or wrap a
@@ -169,6 +173,8 @@ func statusFor(code Code) int {
 		return http.StatusRequestEntityTooLarge
 	case CodeUnsupportedMedia:
 		return http.StatusUnsupportedMediaType
+	case CodeRateLimited:
+		return http.StatusTooManyRequests
 	case CodeUpstream:
 		return http.StatusBadGateway
 	default:

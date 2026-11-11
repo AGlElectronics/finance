@@ -4,7 +4,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"net/netip"
 	"os"
 	"regexp"
 	"strconv"
@@ -15,7 +14,6 @@ import (
 
 	"github.com/AGlElectronics/finance/backend/internal/access"
 	"github.com/AGlElectronics/finance/backend/internal/authbase"
-	"github.com/AGlElectronics/finance/backend/internal/clientip"
 	"github.com/AGlElectronics/finance/backend/internal/denlink"
 	"github.com/AGlElectronics/finance/backend/internal/groupmatch"
 )
@@ -26,7 +24,9 @@ const DefaultAudience = "finance-api"
 
 type Config struct {
 	// Auth is AUTH_MODE (default oidc) and APP_ENV (default production);
-	// AUTH_MODE=dev is refused unless APP_ENV=development.
+	// AUTH_MODE=dev is refused unless APP_ENV=development. Its
+	// TrustedProxies are TRUSTED_PROXY_CIDRS: the proxies whose
+	// X-Forwarded-For entries are believed when working out the client IP.
 	Auth        authbase.Config
 	AppBaseURL  string
 	HTTPAddr    string
@@ -85,9 +85,6 @@ type Config struct {
 	Den denlink.Config
 
 	CORSAllowedOrigins []string
-	// TrustedProxyCIDRs lists the proxies whose X-Forwarded-For entries are
-	// believed when working out the client IP (TRUSTED_PROXY_CIDRS).
-	TrustedProxyCIDRs []netip.Prefix
 
 	ShutdownTimeout time.Duration
 }
@@ -158,12 +155,6 @@ func Load() (*Config, error) {
 	} else {
 		cfg.MaxBackdateDays = int(v)
 	}
-	trusted, err := clientip.ParseCIDRs(getEnv("TRUSTED_PROXY_CIDRS", clientip.DefaultTrustedProxies))
-	if err != nil {
-		errs = append(errs, "TRUSTED_PROXY_CIDRS: "+err.Error())
-	}
-	cfg.TrustedProxyCIDRs = trusted
-
 	if err := cfg.validate(); err != nil {
 		errs = append(errs, strings.TrimPrefix(err.Error(), "invalid config: "))
 	}

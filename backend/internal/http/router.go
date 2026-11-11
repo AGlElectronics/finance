@@ -8,7 +8,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
-	"github.com/go-chi/cors"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/hlog"
@@ -19,7 +18,6 @@ import (
 	"github.com/AGlElectronics/finance/backend/internal/auth"
 	"github.com/AGlElectronics/finance/backend/internal/authbase"
 	"github.com/AGlElectronics/finance/backend/internal/catalog"
-	"github.com/AGlElectronics/finance/backend/internal/clientip"
 	"github.com/AGlElectronics/finance/backend/internal/config"
 	"github.com/AGlElectronics/finance/backend/internal/denlink"
 	"github.com/AGlElectronics/finance/backend/internal/docstore"
@@ -48,7 +46,9 @@ func NewRouter(deps Deps, version string) http.Handler {
 	r.Use(cfg.Auth.StripDevHeaders)
 	r.Use(authbase.SecurityHeaders)
 	r.Use(chimiddleware.RequestID)
-	r.Use(clientip.Middleware(deps.Config.TrustedProxyCIDRs))
+	// RemoteAddr becomes the real client behind TRUSTED_PROXY_CIDRS, before
+	// the request log and the rate limiter.
+	r.Use(cfg.Auth.TrustedProxies.Middleware)
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.Timeout(60 * time.Second))
 
@@ -64,14 +64,12 @@ func NewRouter(deps Deps, version string) http.Handler {
 	}))
 	r.Use(hlog.RequestIDHandler("request_id", "X-Request-ID"))
 
-	r.Use(cors.Handler(cors.Options{
+	// X-Dev-User and X-Dev-Groups only in dev mode. The web app reads the
+	// request ID, idempotent replays and PDF file names.
+	r.Use(cfg.Auth.CORS(authbase.CORSOptions{
 		AllowedOrigins: deps.Config.CORSAllowedOrigins,
-		AllowedMethods: []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
-		// X-Dev-User and X-Dev-Groups only in dev mode.
-		AllowedHeaders:   cfg.Auth.AllowedHeaders("Idempotency-Key"),
-		ExposedHeaders:   []string{"X-Request-ID", "Idempotent-Replayed", "Content-Disposition"},
-		AllowCredentials: true,
-		MaxAge:           300,
+		ExtraHeaders:   []string{"Idempotency-Key"},
+		ExposeHeaders:  []string{"X-Request-ID", "Idempotent-Replayed", "Content-Disposition"},
 	}))
 
 	health := newHealthHandler(deps.Pool, version)
