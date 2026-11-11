@@ -127,7 +127,15 @@ counts rebuilds of the same version. Rebuilds get no entry here.
   `S3_SECRET_ACCESS_KEY` from `finance-secrets`), the role groups and the
   money settings, and allows egress to S3 (`networkPolicy.data.s3`) by
   default. Add the bucket to Den's `FILES_S3_BUCKETS` so it is backed up.
-  See
+  `finance-secrets` must also hold `DEN_LINK_ENCRYPTION_KEY`: the backend
+  reads it through a named key reference, so without it the pod stays in
+  `CreateContainerConfigError` (optional only with `config.APP_ENV:
+  development`). `config.OIDC_AUDIENCE` defaults to `finance-api`. The web
+  app gets `KEYCLOAK_ORIGIN` for its Content Security Policy (scheme and
+  host of the sign-in address unless `frontend.securityHeaders.keycloakOrigin`
+  is set; also `denOrigin`, `s3Origin`, `extraConnectSrc`) and an
+  `emptyDir` at `/etc/nginx/snippets`, and every location that serves the
+  app sends the shared security headers. See
   [Set up Finance](https://aglelectronics.github.io/con-services/modules/finance/setup/).
 - Development: `infra/docker-compose.yml` mounts
   `infra/frontend-config/compose.json` (dev sign-in) as the web app's
