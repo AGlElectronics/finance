@@ -14,17 +14,20 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/AGlElectronics/finance/backend/internal/access"
+	"github.com/AGlElectronics/finance/backend/internal/authbase"
 	"github.com/AGlElectronics/finance/backend/internal/clientip"
 	"github.com/AGlElectronics/finance/backend/internal/denlink"
+	"github.com/AGlElectronics/finance/backend/internal/groupmatch"
 )
 
-const (
-	AuthModeDev  = "dev"
-	AuthModeOIDC = "oidc"
-)
+// DefaultAudience is OIDC_AUDIENCE when unset: the audience Keycloak's
+// audience mapper puts into Finance's access tokens.
+const DefaultAudience = "finance-api"
 
 type Config struct {
-	AppEnv      string
+	// Auth is AUTH_MODE (default oidc) and APP_ENV (default production);
+	// AUTH_MODE=dev is refused unless APP_ENV=development.
+	Auth        authbase.Config
 	AppBaseURL  string
 	HTTPAddr    string
 	DatabaseURL string
@@ -38,7 +41,6 @@ type Config struct {
 	S3Region          string
 	S3UsePathStyle    bool
 
-	AuthMode       string
 	DevDefaultUser string
 	// DevDefaultGroups are the groups of a dev-mode caller that sends no
 	// X-Dev-Groups header (DEV_DEFAULT_GROUPS).
@@ -46,11 +48,23 @@ type Config struct {
 
 	OIDCIssuerURL string
 	OIDCClientID  string
-	OIDCAudience  string
+	// OIDCAudience must be in the access token's aud (OIDC_AUDIENCE,
+	// default finance-api). ID tokens are refused.
+	OIDCAudience string
+	// Groups is how token groups are read and matched (OIDC_GROUPS_CLAIM,
+	// OIDC_GROUP_MATCH, OIDC_GROUP_PREFIX).
+	Groups groupmatch.Config
 	// RoleGroups maps each Finance role (access.Role*) to the IdP groups that
 	// grant it (FINANCE_ADMIN_GROUPS, FINANCE_APPROVER_GROUPS,
 	// FINANCE_BOOKKEEPER_GROUPS, FINANCE_READONLY_GROUPS).
-	RoleGroups map[string][]string
+	RoleGroups map[string][]groupmatch.Grant
+
+	// HRServiceToken lets HR read the role catalog (HR_SERVICE_TOKEN).
+	HRServiceToken string
+	// RateLimit (requests per second) and RateBurst bound each person's (or,
+	// signed out, each address's) API calls (API_RATE_LIMIT, API_RATE_BURST).
+	RateLimit float64
+	RateBurst int
 
 	// Currency is the one currency of this installation (FINANCE_CURRENCY).
 	Currency string
@@ -66,12 +80,9 @@ type Config struct {
 	// MaxBackdateDays is how far in the past a document date may lie.
 	MaxBackdateDays int
 
-	// DenInternalURL replaces the host of pasted Den pairing URLs, for when
-	// Den is reachable under a different address from this backend (Docker).
-	DenInternalURL string
-	// DenMode is DEN_MODE: required keeps the API locked until the module
-	// is paired with Den; standalone (the default) does not.
-	DenMode denlink.Mode
+	// Den is the pairing configuration (DEN_MODE, DEN_INTERNAL_URL,
+	// DEN_ALLOWED_HOSTS, DEN_LINK_ENCRYPTION_KEY[_PREVIOUS], APP_ENV).
+	Den denlink.Config
 
 	CORSAllowedOrigins []string
 	// TrustedProxyCIDRs lists the proxies whose X-Forwarded-For entries are
@@ -85,7 +96,6 @@ func Load() (*Config, error) {
 	_ = godotenv.Load()
 
 	cfg := &Config{
-		AppEnv:            getEnv("APP_ENV", "development"),
 		AppBaseURL:        getEnv("APP_BASE_URL", "http://localhost:8080"),
 		HTTPAddr:          getEnv("HTTP_ADDR", ":8080"),
 		DatabaseURL:       getEnv("DATABASE_URL", ""),
@@ -95,28 +105,44 @@ func Load() (*Config, error) {
 		S3SecretAccessKey: getEnv("S3_SECRET_ACCESS_KEY", ""),
 		S3Region:          getEnv("S3_REGION", "us-east-1"),
 		S3UsePathStyle:    getEnvBool("S3_USE_PATH_STYLE", true),
-		AuthMode:          strings.ToLower(getEnv("AUTH_MODE", AuthModeDev)),
 		DevDefaultUser:    getEnv("DEV_DEFAULT_USER", "dev-finance-admin"),
 		DevDefaultGroups:  SplitCSV(getEnv("DEV_DEFAULT_GROUPS", access.RoleAdmin)),
 		OIDCIssuerURL:     getEnv("OIDC_ISSUER_URL", ""),
 		OIDCClientID:      getEnv("OIDC_CLIENT_ID", ""),
-		OIDCAudience:      getEnv("OIDC_AUDIENCE", ""),
-		RoleGroups: map[string][]string{
-			access.RoleAdmin:      SplitCSV(getEnv("FINANCE_ADMIN_GROUPS", access.RoleAdmin)),
-			access.RoleApprover:   SplitCSV(getEnv("FINANCE_APPROVER_GROUPS", access.RoleApprover)),
-			access.RoleBookkeeper: SplitCSV(getEnv("FINANCE_BOOKKEEPER_GROUPS", access.RoleBookkeeper)),
-			access.RoleReadOnly:   SplitCSV(getEnv("FINANCE_READONLY_GROUPS", access.RoleReadOnly)),
+		OIDCAudience:      getEnv("OIDC_AUDIENCE", DefaultAudience),
+		RoleGroups: map[string][]groupmatch.Grant{
+			access.RoleAdmin:      Grants(getEnv("FINANCE_ADMIN_GROUPS", access.RoleAdmin)),
+			access.RoleApprover:   Grants(getEnv("FINANCE_APPROVER_GROUPS", access.RoleApprover)),
+			access.RoleBookkeeper: Grants(getEnv("FINANCE_BOOKKEEPER_GROUPS", access.RoleBookkeeper)),
+			access.RoleReadOnly:   Grants(getEnv("FINANCE_READONLY_GROUPS", access.RoleReadOnly)),
 		},
+		HRServiceToken:     os.Getenv("HR_SERVICE_TOKEN"),
 		Currency:           strings.ToUpper(getEnv("FINANCE_CURRENCY", "EUR")),
 		InvoicePrefix:      getEnv("FINANCE_INVOICE_PREFIX", "FIN-"),
 		CreditNotePrefix:   getEnv("FINANCE_CREDIT_NOTE_PREFIX", "FIN-CN-"),
-		DenInternalURL:     getEnv("DEN_INTERNAL_URL", ""),
-		DenMode:            denlink.Mode(getEnv("DEN_MODE", string(denlink.ModeStandalone))),
 		CORSAllowedOrigins: SplitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3006")),
 		ShutdownTimeout:    getEnvDuration("SHUTDOWN_TIMEOUT", 15*time.Second),
 	}
 
 	var errs []string
+	var err error
+	if cfg.Auth, err = authbase.FromEnv(os.Getenv); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if cfg.Groups, err = groupmatch.FromEnv(os.Getenv); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if cfg.Den, err = denlink.FromEnv("finance", "", os.Getenv); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if cfg.RateLimit, err = authbase.ParseRate(getEnv("API_RATE_LIMIT", "300/m")); err != nil {
+		errs = append(errs, "API_RATE_LIMIT: "+err.Error())
+	}
+	if v, err := getEnvInt("API_RATE_BURST", 60); err != nil || v < 1 {
+		errs = append(errs, "API_RATE_BURST must be a whole number of 1 or more")
+	} else {
+		cfg.RateBurst = int(v)
+	}
 	if v, err := getEnvInt("FINANCE_DEFAULT_VAT_RATE_BP", 2000); err != nil {
 		errs = append(errs, err.Error())
 	} else {
@@ -132,18 +158,17 @@ func Load() (*Config, error) {
 	} else {
 		cfg.MaxBackdateDays = int(v)
 	}
-	if len(errs) > 0 {
-		return nil, errors.New("invalid config: " + strings.Join(errs, "; "))
-	}
-
 	trusted, err := clientip.ParseCIDRs(getEnv("TRUSTED_PROXY_CIDRS", clientip.DefaultTrustedProxies))
 	if err != nil {
-		return nil, fmt.Errorf("invalid config: TRUSTED_PROXY_CIDRS: %w", err)
+		errs = append(errs, "TRUSTED_PROXY_CIDRS: "+err.Error())
 	}
 	cfg.TrustedProxyCIDRs = trusted
 
 	if err := cfg.validate(); err != nil {
-		return nil, err
+		errs = append(errs, strings.TrimPrefix(err.Error(), "invalid config: "))
+	}
+	if len(errs) > 0 {
+		return nil, errors.New("invalid config: " + strings.Join(errs, "; "))
 	}
 	return cfg, nil
 }
@@ -176,6 +201,9 @@ func (c *Config) validate() error {
 	if c.MaxBackdateDays < 0 || c.MaxBackdateDays > 3660 {
 		errs = append(errs, "FINANCE_MAX_BACKDATE_DAYS must be between 0 and 3660")
 	}
+	if c.OIDCAudience == "" {
+		errs = append(errs, "OIDC_AUDIENCE must not be empty")
+	}
 	for role, groups := range c.RoleGroups {
 		if len(groups) == 0 {
 			errs = append(errs, "the groups of role "+role+" must not be empty")
@@ -184,21 +212,8 @@ func (c *Config) validate() error {
 	if c.DatabaseURL == "" {
 		errs = append(errs, "DATABASE_URL is required")
 	}
-	if err := c.DenMode.Validate(); err != nil {
-		errs = append(errs, err.Error())
-	}
-	switch c.AuthMode {
-	case AuthModeDev, AuthModeOIDC:
-	default:
-		errs = append(errs, "AUTH_MODE must be 'dev' or 'oidc'")
-	}
-	if c.AuthMode == AuthModeOIDC {
-		if c.OIDCIssuerURL == "" {
-			errs = append(errs, "OIDC_ISSUER_URL is required when AUTH_MODE=oidc")
-		}
-		if c.OIDCClientID == "" {
-			errs = append(errs, "OIDC_CLIENT_ID is required when AUTH_MODE=oidc")
-		}
+	if !c.DevAuth() && c.OIDCIssuerURL == "" {
+		errs = append(errs, "OIDC_ISSUER_URL is required when AUTH_MODE=oidc")
 	}
 	s3Any := c.S3Endpoint != "" || c.S3AccessKeyID != "" || c.S3SecretAccessKey != ""
 	if s3Any {
@@ -219,6 +234,18 @@ func (c *Config) validate() error {
 		return errors.New("invalid config: " + strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// DevAuth reports AUTH_MODE=dev with APP_ENV=development.
+func (c *Config) DevAuth() bool { return c.Auth.DevAuth() }
+
+// Grants parses a comma-separated group list into stored grants.
+func Grants(csv string) []groupmatch.Grant {
+	var out []groupmatch.Grant
+	for _, g := range SplitCSV(csv) {
+		out = append(out, groupmatch.NewGrant(g))
+	}
+	return out
 }
 
 func (c *Config) S3Configured() bool {
@@ -270,12 +297,30 @@ func getEnvInt(key string, fallback int64) (int64, error) {
 
 // DefaultRoleGroups maps every role to the group of the same name, which is
 // also what the role catalog publishes.
-func DefaultRoleGroups() map[string][]string {
-	out := map[string][]string{}
+func DefaultRoleGroups() map[string][]groupmatch.Grant {
+	out := map[string][]groupmatch.Grant{}
 	for _, r := range access.Roles {
-		out[r] = []string{r}
+		out[r] = []groupmatch.Grant{groupmatch.NewGrant(r)}
 	}
 	return out
+}
+
+// ForTest is a valid configuration for tests: dev sign-in in development,
+// default roles and money settings, standalone Den.
+func ForTest() *Config {
+	return &Config{
+		Auth:             authbase.Config{AuthMode: authbase.AuthDev, AppEnv: authbase.Development},
+		DevDefaultUser:   "nobody",
+		RoleGroups:       DefaultRoleGroups(),
+		Den:              denlink.Config{Slug: "finance", AppEnv: authbase.Development, Mode: denlink.ModeStandalone},
+		Currency:         "EUR",
+		DefaultVATRateBp: 2100,
+		InvoicePrefix:    "FIN-",
+		CreditNotePrefix: "FIN-CN-",
+		MaxBackdateDays:  366,
+		RateLimit:        1000,
+		RateBurst:        1000,
+	}
 }
 
 // SplitCSV splits a comma-separated list, dropping blanks.
@@ -297,7 +342,7 @@ func SplitCSV(s string) []string {
 func (c *Config) String() string {
 	return fmt.Sprintf(
 		"env=%s addr=%s auth=%s db=%s bucket=%s cors=%v",
-		c.AppEnv, c.HTTPAddr, c.AuthMode, maskDSN(c.DatabaseURL), c.S3Bucket, c.CORSAllowedOrigins,
+		c.Auth.AppEnv, c.HTTPAddr, c.Auth.AuthMode, maskDSN(c.DatabaseURL), c.S3Bucket, c.CORSAllowedOrigins,
 	)
 }
 

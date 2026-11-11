@@ -9,71 +9,71 @@ import (
 
 	"github.com/AGlElectronics/finance/backend/internal/access"
 	"github.com/AGlElectronics/finance/backend/internal/actor"
+	"github.com/AGlElectronics/finance/backend/internal/authbase"
 	"github.com/AGlElectronics/finance/backend/internal/config"
 	"github.com/AGlElectronics/finance/backend/internal/httperror"
 )
 
 // Middleware authenticates API requests.
-//   - AUTH_MODE=dev: X-Dev-User (or DEV_DEFAULT_USER) stamps the actor and
-//     X-Dev-Groups (or DEV_DEFAULT_GROUPS) its groups.
-//   - AUTH_MODE=oidc: requires a valid Bearer ID token from the shared Keycloak.
+//   - AUTH_MODE=dev (only with APP_ENV=development): X-Dev-User (or
+//     DEV_DEFAULT_USER) stamps the actor and X-Dev-Groups (or
+//     DEV_DEFAULT_GROUPS) its groups.
+//   - otherwise: requires a valid Bearer access token from the shared
+//     Keycloak whose aud contains OIDC_AUDIENCE.
 //
 // In both modes the groups map to Finance roles through the FINANCE_*_GROUPS
-// settings.
+// settings and the shared matching rule.
 func Middleware(cfg *config.Config, oidcVerifier *OIDCVerifier) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
-			var a *actor.Actor
-
-			switch cfg.AuthMode {
-			case config.AuthModeDev, "":
-				name := strings.TrimSpace(r.Header.Get("X-Dev-User"))
-				if name == "" {
-					name = cfg.DevDefaultUser
-				}
-				if name == "" {
-					name = "dev-finance-admin"
-				}
-				groups := cfg.DevDefaultGroups
-				if raw := strings.TrimSpace(r.Header.Get("X-Dev-Groups")); raw != "" {
-					groups = config.SplitCSV(raw)
-				}
-				a = &actor.Actor{Username: name, Issuer: "dev:", Subject: name, Groups: groups}
-
-			case config.AuthModeOIDC:
-				if oidcVerifier == nil {
-					httperror.Render(w, r, httperror.Internal(errors.New("oidc verifier not initialised")))
-					return
-				}
-				bearer := bearerFromHeader(r.Header.Get("Authorization"))
-				if bearer == "" {
-					httperror.Render(w, r, httperror.Unauthorized("missing bearer token"))
-					return
-				}
-				claims, err := oidcVerifier.Verify(ctx, bearer)
-				if err != nil {
-					log.Ctx(ctx).Debug().Err(err).Msg("finance oidc verify failed")
-					httperror.Render(w, r, httperror.Unauthorized("invalid token"))
-					return
-				}
-				a = &actor.Actor{
-					Username: DisplayName(claims),
-					Issuer:   claims.Issuer,
-					Subject:  claims.Subject,
-					Groups:   claims.Groups,
-				}
-
-			default:
-				httperror.Render(w, r, httperror.Internal(errors.New("unknown auth mode")))
+			a, err := Identify(r, cfg, oidcVerifier)
+			if err != nil {
+				httperror.Render(w, r, err)
 				return
 			}
-
-			a.Roles = access.Resolve(a.Groups, cfg.RoleGroups)
+			a.Roles = access.Resolve(cfg.Groups, a.Groups, cfg.RoleGroups)
 			a.HasAccess = len(a.Roles) > 0
 			next.ServeHTTP(w, r.WithContext(actor.With(ctx, a)))
 		})
 	}
+}
+
+// Identify works out who is calling: the dev headers in dev mode, else the
+// verified bearer token. Roles are not resolved here.
+func Identify(r *http.Request, cfg *config.Config, oidcVerifier *OIDCVerifier) (*actor.Actor, error) {
+	if cfg.DevAuth() {
+		name := strings.TrimSpace(r.Header.Get(authbase.HeaderDevUser))
+		if name == "" {
+			name = cfg.DevDefaultUser
+		}
+		if name == "" {
+			name = "dev-finance-admin"
+		}
+		groups := cfg.DevDefaultGroups
+		if raw := strings.TrimSpace(r.Header.Get(authbase.HeaderDevGroups)); raw != "" {
+			groups = config.SplitCSV(raw)
+		}
+		return &actor.Actor{Username: name, Issuer: "dev:", Subject: name, Groups: groups}, nil
+	}
+	if oidcVerifier == nil {
+		return nil, httperror.Internal(errors.New("oidc verifier not initialised"))
+	}
+	bearer := bearerFromHeader(r.Header.Get("Authorization"))
+	if bearer == "" {
+		return nil, httperror.Unauthorized("missing bearer token")
+	}
+	claims, err := oidcVerifier.Verify(r.Context(), bearer)
+	if err != nil {
+		log.Ctx(r.Context()).Debug().Err(err).Msg("finance oidc verify failed")
+		return nil, httperror.Unauthorized("invalid token")
+	}
+	return &actor.Actor{
+		Username: DisplayName(claims),
+		Issuer:   claims.Issuer,
+		Subject:  claims.Subject,
+		Groups:   claims.Groups,
+	}, nil
 }
 
 // RequireAccess rejects callers who are signed in but hold no Finance role.
@@ -101,6 +101,9 @@ func Require(p access.Permission) func(http.Handler) http.Handler {
 		})
 	}
 }
+
+// BearerFromHeader returns the token of an "Authorization: Bearer" header.
+func BearerFromHeader(h string) string { return bearerFromHeader(h) }
 
 func bearerFromHeader(h string) string {
 	if h == "" {

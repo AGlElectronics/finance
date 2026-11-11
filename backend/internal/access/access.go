@@ -3,7 +3,7 @@
 // (assigned in HR or directly in the IdP); the role catalog publishes them.
 package access
 
-import "strings"
+import "github.com/AGlElectronics/finance/backend/internal/groupmatch"
 
 // Permission is checked per route.
 type Permission string
@@ -70,29 +70,23 @@ func Has(roles []string, p Permission) bool {
 	return false
 }
 
-// Resolve returns the roles whose groups (roleGroups[role]) contain one of
-// the caller's groups.
-func Resolve(groups []string, roleGroups map[string][]string) []string {
+// Resolve returns the roles whose groups (roleGroups[role]) match one of the
+// caller's groups under the shared matching rule (gm).
+func Resolve(gm groupmatch.Config, groups []string, roleGroups map[string][]groupmatch.Grant) []string {
 	out := []string{}
 	for _, role := range Roles {
-		if InAnyGroup(groups, roleGroups[role]) {
+		if InAnyGroup(gm, groups, roleGroups[role]) {
 			out = append(out, role)
 		}
 	}
 	return out
 }
 
-// InAnyGroup matches group names ignoring case and Keycloak's leading "/".
-// This is Finance's own copy of the matching rule; the suite-wide shared
-// rule (full group paths, configurable claim) replaces it when it lands.
-func InAnyGroup(have, want []string) bool {
-	for _, h := range have {
-		h = strings.TrimPrefix(h, "/")
-		for _, w := range want {
-			if strings.EqualFold(h, strings.TrimPrefix(w, "/")) {
-				return true
-			}
-		}
+// InAnyGroup reports whether one of have matches one of the grants.
+func InAnyGroup(gm groupmatch.Config, have []string, grants []groupmatch.Grant) bool {
+	want := make([]string, 0, len(grants))
+	for _, g := range grants {
+		want = append(want, g.Stored)
 	}
-	return false
+	return gm.MatchAny(have, want)
 }

@@ -9,45 +9,48 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 
 	"github.com/AGlElectronics/finance/backend/internal/config"
+	"github.com/AGlElectronics/finance/backend/internal/groupmatch"
 )
 
-// OIDCVerifier verifies Bearer ID tokens from the shared Keycloak realm.
+// OIDCVerifier verifies Bearer access tokens from the shared Keycloak realm:
+// signature, issuer, expiry and that aud contains OIDC_AUDIENCE (Finance's
+// API, finance-api by default). ID tokens are refused.
 type OIDCVerifier struct {
 	verifier *oidc.IDTokenVerifier
 	issuer   string
+	groups   groupmatch.Config
 }
 
-// Claims is the subset HR uses for actor stamping and optional group checks.
+// Claims is what Finance reads from a verified token.
 type Claims struct {
-	Issuer            string   `json:"iss"`
-	Subject           string   `json:"sub"`
-	Email             string   `json:"email"`
-	PreferredUsername string   `json:"preferred_username"`
-	Name              string   `json:"name"`
-	Groups            []string `json:"groups"`
-	Roles             []string `json:"roles"`
+	Issuer            string
+	Subject           string
+	Email             string
+	PreferredUsername string
+	Name              string
+	// Groups come only from the claim named by OIDC_GROUPS_CLAIM.
+	Groups []string
 }
 
-// NewOIDCVerifier discovers the issuer and builds a verifier for the SPA audience.
+// NewOIDCVerifier discovers the issuer and builds a verifier for Finance's
+// API audience.
 func NewOIDCVerifier(ctx context.Context, cfg *config.Config) (*OIDCVerifier, error) {
-	if cfg.OIDCIssuerURL == "" || cfg.OIDCClientID == "" {
-		return nil, errors.New("OIDC verifier requires OIDC_ISSUER_URL and OIDC_CLIENT_ID")
+	if cfg.OIDCIssuerURL == "" {
+		return nil, errors.New("OIDC verifier requires OIDC_ISSUER_URL")
 	}
 	provider, err := oidc.NewProvider(ctx, cfg.OIDCIssuerURL)
 	if err != nil {
 		return nil, fmt.Errorf("oidc discovery: %w", err)
 	}
-	audience := cfg.OIDCAudience
-	if audience == "" {
-		audience = cfg.OIDCClientID
-	}
-	return &OIDCVerifier{
-		verifier: provider.Verifier(&oidc.Config{ClientID: audience}),
-		issuer:   cfg.OIDCIssuerURL,
-	}, nil
+	return NewOIDCVerifierFrom(provider.Verifier(&oidc.Config{ClientID: cfg.OIDCAudience}), cfg.OIDCIssuerURL, cfg.Groups), nil
 }
 
-// Verify validates a bearer ID token and returns claims.
+// NewOIDCVerifierFrom wraps an existing go-oidc verifier (tests).
+func NewOIDCVerifierFrom(v *oidc.IDTokenVerifier, issuer string, groups groupmatch.Config) *OIDCVerifier {
+	return &OIDCVerifier{verifier: v, issuer: issuer, groups: groups}
+}
+
+// Verify validates a bearer access token and returns its claims.
 func (v *OIDCVerifier) Verify(ctx context.Context, bearer string) (*Claims, error) {
 	bearer = strings.TrimSpace(bearer)
 	if bearer == "" {
@@ -57,32 +60,27 @@ func (v *OIDCVerifier) Verify(ctx context.Context, bearer string) (*Claims, erro
 	if err != nil {
 		return nil, fmt.Errorf("verify token: %w", err)
 	}
-	var c Claims
-	if err := tok.Claims(&c); err != nil {
+	var raw map[string]any
+	if err := tok.Claims(&raw); err != nil {
 		return nil, fmt.Errorf("parse claims: %w", err)
+	}
+	// Keycloak marks ID tokens typ "ID" and access tokens "Bearer".
+	if typ, _ := raw["typ"].(string); strings.EqualFold(typ, "ID") {
+		return nil, errors.New("an ID token was sent; send the access token")
+	}
+	str := func(k string) string { s, _ := raw[k].(string); return s }
+	c := &Claims{
+		Issuer:            v.issuer,
+		Subject:           tok.Subject,
+		Email:             str("email"),
+		PreferredUsername: str("preferred_username"),
+		Name:              str("name"),
+		Groups:            v.groups.Groups(raw),
 	}
 	if c.Subject == "" {
 		return nil, errors.New("token missing sub claim")
 	}
-	c.Issuer = v.issuer
-	c.Groups = mergeUnique(c.Groups, c.Roles)
-	return &c, nil
-}
-
-func mergeUnique(a, b []string) []string {
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(a)+len(b))
-	for _, v := range append(append([]string{}, a...), b...) {
-		if v == "" {
-			continue
-		}
-		if _, ok := seen[v]; ok {
-			continue
-		}
-		seen[v] = struct{}{}
-		out = append(out, v)
-	}
-	return out
+	return c, nil
 }
 
 // DisplayName picks a human label from claims.

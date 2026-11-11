@@ -39,7 +39,7 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	}
 
 	logger.Info().
-		Str("env", cfg.AppEnv).
+		Str("env", cfg.Auth.AppEnv).
 		Str("addr", cfg.HTTPAddr).
 		Str("version", Version).
 		Str("summary", cfg.String()).
@@ -56,7 +56,7 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	logger.Info().Msg("database pool ready")
 
 	var oidcVerifier *auth.OIDCVerifier
-	if cfg.AuthMode == config.AuthModeOIDC {
+	if !cfg.DevAuth() {
 		v, err := auth.NewOIDCVerifier(ctx, cfg)
 		if err != nil {
 			return fmt.Errorf("oidc verifier: %w", err)
@@ -80,7 +80,12 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		logger.Warn().Msg("S3_* not set: invoices and credit notes cannot be issued until PDF storage is configured")
 	}
 
-	den := denlink.New(pool, denlink.Config{Slug: "finance", Version: Version, InternalURL: cfg.DenInternalURL, Mode: cfg.DenMode}, logger)
+	denCfg := cfg.Den
+	denCfg.Version = Version
+	den, err := denlink.Open(pool, denCfg, logger)
+	if err != nil {
+		return fmt.Errorf("den link: %w", err)
+	}
 	if err := den.Restore(ctx); err != nil {
 		logger.Warn().Err(err).Msg("den link: load failed")
 	}
