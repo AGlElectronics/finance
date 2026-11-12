@@ -15,6 +15,9 @@ counts rebuilds of the same version. Rebuilds get no entry here.
 
 ### Added
 
+- `GET /api/portal/todos` for Den's portal. Den's backend calls it with
+  Finance's pairing credential and the person's issuer and subject. The
+  list is empty. Not paired answers 404; a wrong credential answers 401.
 - A convention's money: customers, outgoing invoices, payments, expenses,
   a ledger with a running balance and a dashboard of cash versus what is
   still owed. No bank connection yet.

@@ -94,6 +94,10 @@ func NewRouter(deps Deps, version string) http.Handler {
 	r.Get("/api/brand", den.BrandHandler("/api/brand"))
 	r.Get("/api/brand/{role}", den.AssetHandler)
 	r.Get("/api/den/state", den.StateHandler)
+	// Den's backend calls this with the pairing credential. Outside the
+	// authenticated /api group so a user token is not required, and outside
+	// RequirePaired so an unpaired module answers 404 rather than 503.
+	r.Get("/api/portal/todos", portalTodos(den))
 
 	limiter := authbase.NewRateLimiter(authbase.RateLimitOptions{
 		Rate: cfg.RateLimit, Burst: cfg.RateBurst,
