@@ -753,7 +753,7 @@ func (s *Service) ListInvoices(ctx context.Context, f InvoiceFilter) (InvoicePag
 	if f.Status != "" && !invoiceStatuses[f.Status] {
 		return InvoicePage{}, httperror.BadRequest("unknown status " + f.Status)
 	}
-	f.Page = f.Page.Normalize()
+	f.Page = f.Normalize()
 	out := InvoicePage{Invoices: []InvoiceSummary{}, Page: f.Page}
 	where := `
 		  FROM (` + invoiceBase + `) b

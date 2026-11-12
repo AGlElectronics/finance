@@ -117,7 +117,7 @@ func scanExpense(row pgx.Row) (Expense, error) {
 
 // ListExpenses returns one page of expenses, newest first.
 func (s *Service) ListExpenses(ctx context.Context, f ExpenseFilter) (ExpensePage, error) {
-	f.Page = f.Page.Normalize()
+	f.Page = f.Normalize()
 	out := ExpensePage{Expenses: []Expense{}, Page: f.Page}
 	const where = `
 		  FROM expenses e

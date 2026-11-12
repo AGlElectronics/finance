@@ -118,7 +118,7 @@ func (s *Service) ListApprovals(ctx context.Context, f ApprovalFilter) (Approval
 	default:
 		return ApprovalPage{}, httperror.BadRequest("status must be pending, approved or rejected")
 	}
-	f.Page = f.Page.Normalize()
+	f.Page = f.Normalize()
 	out := ApprovalPage{Approvals: []Approval{}, Page: f.Page}
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM approvals WHERE $1 = '' OR status = $1`, f.Status).Scan(&out.Total); err != nil {
 		return out, httperror.Internal(err)

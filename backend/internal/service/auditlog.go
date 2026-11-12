@@ -28,7 +28,7 @@ type AuditPage struct {
 
 // AuditLog returns one page of audit events, newest first.
 func (s *Service) AuditLog(ctx context.Context, f AuditFilter) (AuditPage, error) {
-	f.Page = f.Page.Normalize()
+	f.Page = f.Normalize()
 	events, total, err := s.audit.List(ctx, audit.Filter{
 		EntityType: f.EntityType, EntityID: f.EntityID, Action: f.Action, Actor: f.Actor,
 		Limit: f.Limit, Offset: f.Offset,
