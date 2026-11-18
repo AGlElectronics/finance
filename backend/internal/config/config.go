@@ -1,4 +1,4 @@
-﻿// Package config loads the Finance server configuration from the environment.
+// Package config loads the Finance server configuration from the environment.
 package config
 
 import (
@@ -60,7 +60,8 @@ type Config struct {
 	RoleGroups map[string][]groupmatch.Grant
 
 	// HRServiceToken lets HR read the role catalog (HR_SERVICE_TOKEN).
-	HRServiceToken string
+	HRServiceToken string
+
 	// StatsPullToken protects GET /api/internal/stats for Stats. Empty disables it.
 	StatsPullToken string
 	// RateLimit (requests per second) and RateBurst bound each person's (or,
@@ -115,8 +116,9 @@ func Load() (*Config, error) {
 			access.RoleBookkeeper: Grants(getEnv("FINANCE_BOOKKEEPER_GROUPS", access.RoleBookkeeper)),
 			access.RoleReadOnly:   Grants(getEnv("FINANCE_READONLY_GROUPS", access.RoleReadOnly)),
 		},
-		HRServiceToken:     os.Getenv("HR_SERVICE_TOKEN"),
-		StatsPullToken:    strings.TrimSpace(getEnv("STATS_PULL_TOKEN", "")),
+		HRServiceToken: os.Getenv("HR_SERVICE_TOKEN"),
+
+		StatsPullToken:     strings.TrimSpace(getEnv("STATS_PULL_TOKEN", "")),
 		Currency:           strings.ToUpper(getEnv("FINANCE_CURRENCY", "EUR")),
 		InvoicePrefix:      getEnv("FINANCE_INVOICE_PREFIX", "FIN-"),
 		CreditNotePrefix:   getEnv("FINANCE_CREDIT_NOTE_PREFIX", "FIN-CN-"),
