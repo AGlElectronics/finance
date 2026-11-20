@@ -77,6 +77,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 	r.Get("/readyz", health.readyz)
 
 	// HR's service token or any staff sign-in (no Finance role needed).
+	r.Get("/api/internal/stats", internalStatsHandler(cfg.StatsPullToken, deps.Pool))
 	r.Get("/api/role-catalog", catalog.Handler(catalog.Self(cfg.RoleGroups), func(r *http.Request) bool {
 		if catalog.ServiceToken(r, cfg.HRServiceToken) {
 			return true

@@ -22,6 +22,10 @@ import (
 // audience mapper puts into Finance's access tokens.
 const DefaultAudience = "finance-api"
 
+// MinServiceTokenLength is the shortest accepted shared service token
+// (HR_SERVICE_TOKEN, STATS_PULL_TOKEN) when set.
+const MinServiceTokenLength = 32
+
 type Config struct {
 	// Auth is AUTH_MODE (default oidc) and APP_ENV (default production);
 	// AUTH_MODE=dev is refused unless APP_ENV=development. Its
@@ -61,6 +65,9 @@ type Config struct {
 
 	// HRServiceToken lets HR read the role catalog (HR_SERVICE_TOKEN).
 	HRServiceToken string
+
+	// StatsPullToken protects GET /api/internal/stats for Stats. Empty disables it.
+	StatsPullToken string
 	// RateLimit (requests per second) and RateBurst bound each person's (or,
 	// signed out, each address's) API calls (API_RATE_LIMIT, API_RATE_BURST).
 	RateLimit float64
@@ -113,7 +120,9 @@ func Load() (*Config, error) {
 			access.RoleBookkeeper: Grants(getEnv("FINANCE_BOOKKEEPER_GROUPS", access.RoleBookkeeper)),
 			access.RoleReadOnly:   Grants(getEnv("FINANCE_READONLY_GROUPS", access.RoleReadOnly)),
 		},
-		HRServiceToken:     os.Getenv("HR_SERVICE_TOKEN"),
+		HRServiceToken: os.Getenv("HR_SERVICE_TOKEN"),
+
+		StatsPullToken:     strings.TrimSpace(getEnv("STATS_PULL_TOKEN", "")),
 		Currency:           strings.ToUpper(getEnv("FINANCE_CURRENCY", "EUR")),
 		InvoicePrefix:      getEnv("FINANCE_INVOICE_PREFIX", "FIN-"),
 		CreditNotePrefix:   getEnv("FINANCE_CREDIT_NOTE_PREFIX", "FIN-CN-"),
@@ -202,6 +211,12 @@ func (c *Config) validate() error {
 	}
 	if c.DatabaseURL == "" {
 		errs = append(errs, "DATABASE_URL is required")
+	}
+	if c.HRServiceToken != "" && len(c.HRServiceToken) < MinServiceTokenLength {
+		errs = append(errs, fmt.Sprintf("HR_SERVICE_TOKEN must be at least %d characters (openssl rand -hex 32)", MinServiceTokenLength))
+	}
+	if c.StatsPullToken != "" && len(c.StatsPullToken) < MinServiceTokenLength {
+		errs = append(errs, fmt.Sprintf("STATS_PULL_TOKEN must be at least %d characters (openssl rand -hex 32)", MinServiceTokenLength))
 	}
 	if !c.DevAuth() && c.OIDCIssuerURL == "" {
 		errs = append(errs, "OIDC_ISSUER_URL is required when AUTH_MODE=oidc")
